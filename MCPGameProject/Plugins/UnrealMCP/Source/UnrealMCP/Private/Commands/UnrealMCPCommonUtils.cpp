@@ -36,12 +36,18 @@ UWorld* FUnrealMCPCommonUtils::GetTargetWorld(bool bPreferPIE)
 {
     if (bPreferPIE && GEditor)
     {
-        // Look for an active PIE world first
+        // Look for an active PIE world first, but skip worlds being torn down
         for (const FWorldContext& Context : GEngine->GetWorldContexts())
         {
             if (Context.WorldType == EWorldType::PIE && Context.World())
             {
-                return Context.World();
+                UWorld* PIEWorld = Context.World();
+                // Reject worlds that are being destroyed (prevents crash during PIE teardown)
+                if (PIEWorld->HasAnyFlags(RF_BeginDestroyed) || !PIEWorld->bIsWorldInitialized)
+                {
+                    continue;
+                }
+                return PIEWorld;
             }
         }
     }
@@ -1217,6 +1223,133 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
         {
             OutErrorMessage = FString::Printf(TEXT("Failed to load class '%s' for property %s. Try full path like '/Game/Path/BP_Name' or '/Script/Module.ClassName'"),
                 *ClassPath, *PropertyName);
+            return false;
+        }
+    }
+
+    // Handle array properties (TArray<FName>, TArray<FString>, TArray<UObject*>)
+    else if (FArrayProperty* ArrayProp = CastField<FArrayProperty>(Property))
+    {
+        FProperty* InnerProp = ArrayProp->Inner;
+
+        // Parse JSON array
+        if (Value->Type != EJson::Array)
+        {
+            OutErrorMessage = FString::Printf(TEXT("ArrayProperty %s requires a JSON array value"), *PropertyName);
+            return false;
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>& JsonArray = Value->AsArray();
+
+        FScriptArrayHelper ArrayHelper(ArrayProp, PropertyAddr);
+
+        if (InnerProp->IsA<FNameProperty>())
+        {
+            // TArray<FName> — used for Tags, etc.
+            ArrayHelper.Resize(JsonArray.Num());
+            for (int32 i = 0; i < JsonArray.Num(); i++)
+            {
+                FName NameVal(*JsonArray[i]->AsString());
+                CastField<FNameProperty>(InnerProp)->SetPropertyValue(ArrayHelper.GetRawPtr(i), NameVal);
+            }
+            UE_LOG(LogTemp, Display, TEXT("Set array<FName> property %s with %d elements"), *PropertyName, JsonArray.Num());
+            return true;
+        }
+        else if (InnerProp->IsA<FStrProperty>())
+        {
+            // TArray<FString>
+            ArrayHelper.Resize(JsonArray.Num());
+            for (int32 i = 0; i < JsonArray.Num(); i++)
+            {
+                CastField<FStrProperty>(InnerProp)->SetPropertyValue(ArrayHelper.GetRawPtr(i), JsonArray[i]->AsString());
+            }
+            UE_LOG(LogTemp, Display, TEXT("Set array<FString> property %s with %d elements"), *PropertyName, JsonArray.Num());
+            return true;
+        }
+        else if (InnerProp->IsA<FIntProperty>())
+        {
+            // TArray<int32>
+            ArrayHelper.Resize(JsonArray.Num());
+            for (int32 i = 0; i < JsonArray.Num(); i++)
+            {
+                CastField<FIntProperty>(InnerProp)->SetPropertyValue(ArrayHelper.GetRawPtr(i), static_cast<int32>(JsonArray[i]->AsNumber()));
+            }
+            UE_LOG(LogTemp, Display, TEXT("Set array<int32> property %s with %d elements"), *PropertyName, JsonArray.Num());
+            return true;
+        }
+        else if (InnerProp->IsA<FFloatProperty>())
+        {
+            // TArray<float>
+            ArrayHelper.Resize(JsonArray.Num());
+            for (int32 i = 0; i < JsonArray.Num(); i++)
+            {
+                CastField<FFloatProperty>(InnerProp)->SetPropertyValue(ArrayHelper.GetRawPtr(i), static_cast<float>(JsonArray[i]->AsNumber()));
+            }
+            UE_LOG(LogTemp, Display, TEXT("Set array<float> property %s with %d elements"), *PropertyName, JsonArray.Num());
+            return true;
+        }
+        else if (InnerProp->IsA<FDoubleProperty>())
+        {
+            // TArray<double>
+            ArrayHelper.Resize(JsonArray.Num());
+            for (int32 i = 0; i < JsonArray.Num(); i++)
+            {
+                CastField<FDoubleProperty>(InnerProp)->SetPropertyValue(ArrayHelper.GetRawPtr(i), JsonArray[i]->AsNumber());
+            }
+            UE_LOG(LogTemp, Display, TEXT("Set array<double> property %s with %d elements"), *PropertyName, JsonArray.Num());
+            return true;
+        }
+        else if (InnerProp->IsA<FBoolProperty>())
+        {
+            // TArray<bool>
+            ArrayHelper.Resize(JsonArray.Num());
+            for (int32 i = 0; i < JsonArray.Num(); i++)
+            {
+                CastField<FBoolProperty>(InnerProp)->SetPropertyValue(ArrayHelper.GetRawPtr(i), JsonArray[i]->AsBool());
+            }
+            UE_LOG(LogTemp, Display, TEXT("Set array<bool> property %s with %d elements"), *PropertyName, JsonArray.Num());
+            return true;
+        }
+        else if (FObjectProperty* InnerObjProp = CastField<FObjectProperty>(InnerProp))
+        {
+            // TArray<UObject*> — used for OverrideMaterials, etc.
+            ArrayHelper.Resize(JsonArray.Num());
+            for (int32 i = 0; i < JsonArray.Num(); i++)
+            {
+                FString AssetPath = JsonArray[i]->AsString();
+                UObject* LoadedObject = nullptr;
+
+                if (AssetPath.IsEmpty() || AssetPath == TEXT("null") || AssetPath == TEXT("None"))
+                {
+                    // Allow null entries in the array
+                    InnerObjProp->SetObjectPropertyValue(ArrayHelper.GetRawPtr(i), nullptr);
+                    continue;
+                }
+
+                LoadedObject = StaticLoadObject(InnerObjProp->PropertyClass, nullptr, *AssetPath);
+                if (!LoadedObject && !AssetPath.Contains(TEXT(".")))
+                {
+                    FString BaseName = FPaths::GetBaseFilename(AssetPath);
+                    LoadedObject = StaticLoadObject(InnerObjProp->PropertyClass, nullptr, *(AssetPath + TEXT(".") + BaseName));
+                }
+                if (LoadedObject)
+                {
+                    InnerObjProp->SetObjectPropertyValue(ArrayHelper.GetRawPtr(i), LoadedObject);
+                }
+                else
+                {
+                    OutErrorMessage = FString::Printf(TEXT("Failed to load asset '%s' at array index %d for property %s (expected type: %s)"),
+                        *AssetPath, i, *PropertyName, *InnerObjProp->PropertyClass->GetName());
+                    return false;
+                }
+            }
+            UE_LOG(LogTemp, Display, TEXT("Set array<UObject*> property %s with %d elements"), *PropertyName, JsonArray.Num());
+            return true;
+        }
+        else
+        {
+            OutErrorMessage = FString::Printf(TEXT("Unsupported array inner type: %s for property %s"),
+                *InnerProp->GetClass()->GetName(), *PropertyName);
             return false;
         }
     }

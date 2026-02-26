@@ -272,6 +272,11 @@ TSharedPtr<FJsonObject> FUnrealMCPLevelCommands::HandleStopPlayInEditor(const TS
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Not currently playing in editor"));
 	}
 
+	// Request PIE to end. This is deferred — PIE tears down on subsequent tick(s).
+	// The GetTargetWorld() guard (RF_BeginDestroyed / bIsWorldInitialized check)
+	// prevents subsequent commands from grabbing the dying PIE world.
+	// NOTE: We cannot wait/spin here because we're on the game thread (inside an
+	// AsyncTask lambda) — pumping the task graph would cause re-entrant execution.
 	LevelEditorSubsystem->EditorRequestEndPlay();
 
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();

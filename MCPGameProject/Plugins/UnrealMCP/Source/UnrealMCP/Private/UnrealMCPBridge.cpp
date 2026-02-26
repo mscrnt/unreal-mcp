@@ -261,6 +261,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_viewport_camera") ||
                      CommandType == TEXT("set_actor_mobility") ||
                      CommandType == TEXT("set_actor_material") ||
+                     CommandType == TEXT("set_actor_tags") ||
+                     CommandType == TEXT("get_actor_tags") ||
                      CommandType == TEXT("add_movement_input") ||
                      CommandType == TEXT("pawn_action"))
             {

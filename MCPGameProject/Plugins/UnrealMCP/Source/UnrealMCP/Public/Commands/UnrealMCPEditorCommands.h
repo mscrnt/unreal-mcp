@@ -41,6 +41,10 @@ private:
     TSharedPtr<FJsonObject> HandleSetActorMobility(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleSetActorMaterial(const TSharedPtr<FJsonObject>& Params);
 
+    // Actor tags
+    TSharedPtr<FJsonObject> HandleSetActorTags(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetActorTags(const TSharedPtr<FJsonObject>& Params);
+
     // PIE / RL tools
     TSharedPtr<FJsonObject> HandleAddMovementInput(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandlePawnAction(const TSharedPtr<FJsonObject>& Params);

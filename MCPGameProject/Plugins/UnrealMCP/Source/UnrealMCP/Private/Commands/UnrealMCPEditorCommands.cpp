@@ -18,10 +18,12 @@
 #include "Camera/CameraActor.h"
 #include "GameFramework/PlayerStart.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "EditorSubsystem.h"
 #include "Subsystems/EditorActorSubsystem.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -107,6 +109,14 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("set_actor_material"))
     {
         return HandleSetActorMaterial(Params);
+    }
+    else if (CommandType == TEXT("set_actor_tags"))
+    {
+        return HandleSetActorTags(Params);
+    }
+    else if (CommandType == TEXT("get_actor_tags"))
+    {
+        return HandleGetActorTags(Params);
     }
     else if (CommandType == TEXT("add_movement_input"))
     {
@@ -454,24 +464,69 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_name' parameter"));
     }
 
-    // Find the blueprint
+    // Find the blueprint - try multiple resolution strategies
     if (BlueprintName.IsEmpty())
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint name is empty"));
     }
 
-    FString Root      = TEXT("/Game/Blueprints/");
-    FString AssetPath = Root + BlueprintName;
+    UBlueprint* Blueprint = nullptr;
+    FString ResolvedPath;
 
-    if (!FPackageName::DoesPackageExist(AssetPath))
+    // Strategy 1: Treat as full content path (e.g. "/Game/ParkourRace/Blueprints/BP_RLAgent")
+    if (BlueprintName.StartsWith(TEXT("/")))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint '%s' not found – it must reside under /Game/Blueprints"), *BlueprintName));
+        Blueprint = LoadObject<UBlueprint>(nullptr, *BlueprintName);
+        if (!Blueprint)
+        {
+            // Try Package.ObjectName format
+            FString BaseName = FPaths::GetBaseFilename(BlueprintName);
+            Blueprint = LoadObject<UBlueprint>(nullptr, *(BlueprintName + TEXT(".") + BaseName));
+        }
+        if (Blueprint) ResolvedPath = BlueprintName;
     }
 
-    UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
+    // Strategy 2: Try under /Game/Blueprints/ (legacy default)
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString LegacyPath = TEXT("/Game/Blueprints/") + BlueprintName;
+        Blueprint = LoadObject<UBlueprint>(nullptr, *LegacyPath);
+        if (!Blueprint)
+        {
+            FString BaseName = FPaths::GetBaseFilename(LegacyPath);
+            Blueprint = LoadObject<UBlueprint>(nullptr, *(LegacyPath + TEXT(".") + BaseName));
+        }
+        if (Blueprint) ResolvedPath = LegacyPath;
+    }
+
+    // Strategy 3: Search asset registry by name
+    if (!Blueprint)
+    {
+        FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+        IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+        FString SearchName = FPaths::GetBaseFilename(BlueprintName);
+        TArray<FAssetData> FoundAssets;
+        AssetRegistry.GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), FoundAssets);
+
+        for (const FAssetData& Asset : FoundAssets)
+        {
+            if (Asset.AssetName.ToString() == SearchName)
+            {
+                Blueprint = Cast<UBlueprint>(Asset.GetAsset());
+                if (Blueprint)
+                {
+                    ResolvedPath = Asset.GetObjectPathString();
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!Blueprint || !Blueprint->GeneratedClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Blueprint not found: '%s'. Provide a full path like '/Game/MyFolder/BP_Name' or just the asset name."), *BlueprintName));
     }
 
     // Get transform parameters
@@ -493,10 +548,20 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
     }
 
     // Spawn the actor
-    UWorld* World = GEditor->GetEditorWorldContext().World();
+    UWorld* World = FUnrealMCPCommonUtils::GetTargetWorld(false); // Use editor world for spawning
     if (!World)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+    }
+
+    // Check if an actor with this name already exists
+    for (TActorIterator<AActor> It(World); It; ++It)
+    {
+        if (It->GetName() == ActorName)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+                TEXT("Actor with name '%s' already exists. Use a different name or delete the existing actor first."), *ActorName));
+        }
     }
 
     FTransform SpawnTransform;
@@ -510,7 +575,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
     AActor* NewActor = World->SpawnActor<AActor>(Blueprint->GeneratedClass, SpawnTransform, SpawnParams);
     if (NewActor)
     {
-        return FUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
+        TSharedPtr<FJsonObject> ResultObj = FUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
+        ResultObj->SetStringField(TEXT("blueprint_path"), ResolvedPath);
+        return ResultObj;
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to spawn blueprint actor"));
@@ -890,10 +957,17 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorMaterial(const T
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
 	}
 
-	UStaticMeshComponent* MeshComp = Actor->FindComponentByClass<UStaticMeshComponent>();
+	// Try StaticMeshComponent first, then SkeletalMeshComponent
+	UMeshComponent* MeshComp = Cast<UMeshComponent>(Actor->FindComponentByClass<UStaticMeshComponent>());
+	FString CompType = TEXT("StaticMeshComponent");
 	if (!MeshComp)
 	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Actor has no StaticMeshComponent"));
+		MeshComp = Cast<UMeshComponent>(Actor->FindComponentByClass<USkeletalMeshComponent>());
+		CompType = TEXT("SkeletalMeshComponent");
+	}
+	if (!MeshComp)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Actor has no StaticMeshComponent or SkeletalMeshComponent"));
 	}
 
 	MeshComp->SetMaterial(SlotIndex, Material);
@@ -901,6 +975,108 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorMaterial(const T
 	ResultObj->SetStringField(TEXT("actor"), ActorName);
 	ResultObj->SetStringField(TEXT("material"), MaterialPath);
 	ResultObj->SetNumberField(TEXT("slot"), SlotIndex);
+	ResultObj->SetStringField(TEXT("component_type"), CompType);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ============================================================
+// Actor Tags
+// ============================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorTags(const TSharedPtr<FJsonObject>& Params)
+{
+	FString ActorName;
+	if (!Params->TryGetStringField(TEXT("name"), ActorName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+	}
+
+	AActor* Actor = FUnrealMCPCommonUtils::FindActorByName(ActorName);
+	if (!Actor)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+	}
+
+	if (!Params->HasField(TEXT("tags")))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'tags' parameter (array of strings)"));
+	}
+
+	// Parse tags from JSON array
+	const TArray<TSharedPtr<FJsonValue>>& TagsArray = Params->GetArrayField(TEXT("tags"));
+
+	// Check mode: "add", "remove", or "set" (default: "set" replaces all tags)
+	FString Mode = TEXT("set");
+	Params->TryGetStringField(TEXT("mode"), Mode);
+
+	Actor->Modify();
+
+	if (Mode == TEXT("add"))
+	{
+		for (const TSharedPtr<FJsonValue>& TagValue : TagsArray)
+		{
+			FName Tag(*TagValue->AsString());
+			Actor->Tags.AddUnique(Tag);
+		}
+	}
+	else if (Mode == TEXT("remove"))
+	{
+		for (const TSharedPtr<FJsonValue>& TagValue : TagsArray)
+		{
+			FName Tag(*TagValue->AsString());
+			Actor->Tags.Remove(Tag);
+		}
+	}
+	else // "set" — replace all tags
+	{
+		Actor->Tags.Empty();
+		for (const TSharedPtr<FJsonValue>& TagValue : TagsArray)
+		{
+			Actor->Tags.Add(FName(*TagValue->AsString()));
+		}
+	}
+
+	// Build response with current tags
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("actor"), ActorName);
+	ResultObj->SetStringField(TEXT("mode"), Mode);
+
+	TArray<TSharedPtr<FJsonValue>> CurrentTags;
+	for (const FName& Tag : Actor->Tags)
+	{
+		CurrentTags.Add(MakeShared<FJsonValueString>(Tag.ToString()));
+	}
+	ResultObj->SetArrayField(TEXT("tags"), CurrentTags);
+	ResultObj->SetNumberField(TEXT("tag_count"), Actor->Tags.Num());
+
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorTags(const TSharedPtr<FJsonObject>& Params)
+{
+	FString ActorName;
+	if (!Params->TryGetStringField(TEXT("name"), ActorName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+	}
+
+	AActor* Actor = FUnrealMCPCommonUtils::FindActorByName(ActorName);
+	if (!Actor)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("actor"), ActorName);
+
+	TArray<TSharedPtr<FJsonValue>> TagsJson;
+	for (const FName& Tag : Actor->Tags)
+	{
+		TagsJson.Add(MakeShared<FJsonValueString>(Tag.ToString()));
+	}
+	ResultObj->SetArrayField(TEXT("tags"), TagsJson);
+	ResultObj->SetNumberField(TEXT("tag_count"), Actor->Tags.Num());
+
 	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
 }
 

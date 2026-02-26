@@ -501,6 +501,59 @@ def register_editor_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
+    def set_actor_tags(
+        ctx: Context,
+        name: str,
+        tags: List[str],
+        mode: str = "set"
+    ) -> Dict[str, Any]:
+        """
+        Set, add, or remove tags on an actor. Tags are FName arrays used for
+        identification (e.g. finding RL agents by tag during PIE).
+
+        Args:
+            name: Name of the actor
+            tags: List of tag strings (e.g. ["RLRed", "Player"])
+            mode: "set" (replace all tags), "add" (append), or "remove" (remove specific tags)
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("set_actor_tags", {
+                "name": name,
+                "tags": tags,
+                "mode": mode
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def get_actor_tags(
+        ctx: Context,
+        name: str
+    ) -> Dict[str, Any]:
+        """
+        Get all tags on an actor.
+
+        Args:
+            name: Name of the actor
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("get_actor_tags", {
+                "name": name
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
     def set_actor_material(
         ctx: Context,
         name: str,
@@ -508,7 +561,7 @@ def register_editor_tools(mcp: FastMCP):
         slot: int = 0
     ) -> Dict[str, Any]:
         """
-        Set the material on an actor's static mesh component.
+        Set the material on an actor's mesh component (StaticMesh or SkeletalMesh).
 
         Args:
             name: Name of the actor
