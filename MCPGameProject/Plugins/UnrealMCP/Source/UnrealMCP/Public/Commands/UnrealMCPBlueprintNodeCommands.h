@@ -24,4 +24,20 @@ private:
     TSharedPtr<FJsonObject> HandleAddBlueprintInputActionNode(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleAddBlueprintSelfReference(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleFindBlueprintNodes(const TSharedPtr<FJsonObject>& Params);
+
+    // Phase 4: Advanced Blueprint Nodes
+    TSharedPtr<FJsonObject> HandleAddBlueprintBranchNode(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddBlueprintForLoopNode(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddBlueprintDelayNode(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddBlueprintPrintStringNode(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddBlueprintSetTimerNode(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddBlueprintCustomEventNode(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddBlueprintVariableGetNode(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddBlueprintVariableSetNode(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetNodePinDefaultValue(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddBlueprintMathNode(const TSharedPtr<FJsonObject>& Params);
+
+    // Variable management
+    TSharedPtr<FJsonObject> HandleRemoveBlueprintVariable(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleChangeBlueprintVariableType(const TSharedPtr<FJsonObject>& Params);
 }; 

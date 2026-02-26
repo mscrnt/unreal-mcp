@@ -51,7 +51,13 @@ public class UnrealMCP : ModuleRules
 				"KismetCompiler",
 				"BlueprintGraph",
 				"Projects",
-				"AssetRegistry"
+				"AssetRegistry",
+				"LevelEditor",              // Level management, PIE control
+				"MaterialEditor",           // Material creation and editing
+				"AssetTools",               // Asset importing
+				"EnhancedInput",            // Enhanced Input System
+				"AnimGraph",                // Animation Blueprint graphs
+				"AnimGraphRuntime"          // Animation graph runtime nodes
 			}
 		);
 		

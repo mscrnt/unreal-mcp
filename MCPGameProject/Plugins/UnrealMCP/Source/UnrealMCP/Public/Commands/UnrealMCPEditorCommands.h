@@ -31,4 +31,17 @@ private:
     // Editor viewport commands
     TSharedPtr<FJsonObject> HandleFocusViewport(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleTakeScreenshot(const TSharedPtr<FJsonObject>& Params);
+
+    // Phase 5: Editor Enhancements
+    TSharedPtr<FJsonObject> HandleSelectActors(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetSelectedActors(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleDuplicateActor(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetViewportCamera(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetViewportCamera(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetActorMobility(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetActorMaterial(const TSharedPtr<FJsonObject>& Params);
+
+    // PIE / RL tools
+    TSharedPtr<FJsonObject> HandleAddMovementInput(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandlePawnAction(const TSharedPtr<FJsonObject>& Params);
 }; 

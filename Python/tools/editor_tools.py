@@ -68,9 +68,11 @@ def register_editor_tools(mcp: FastMCP):
             
             if not response:
                 return []
-                
-            return response.get("actors", [])
-            
+
+            # Response may be wrapped in "result"
+            data = response.get("result", response)
+            return data.get("actors", [])
+
         except Exception as e:
             logger.error(f"Error finding actors: {e}")
             return []
@@ -365,5 +367,247 @@ def register_editor_tools(mcp: FastMCP):
             error_msg = f"Error spawning blueprint actor: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
+
+    # ============================================================
+    # Phase 5: Editor Enhancements
+    # ============================================================
+
+    @mcp.tool()
+    def select_actors(ctx: Context, names: List[str]) -> Dict[str, Any]:
+        """
+        Select actors in the editor by name.
+
+        Args:
+            names: List of actor names to select
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("select_actors", {"names": names})
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def get_selected_actors(ctx: Context) -> Dict[str, Any]:
+        """Get the currently selected actors in the editor."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("get_selected_actors", {})
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def duplicate_actor(
+        ctx: Context,
+        name: str,
+        new_name: str = "",
+        location: List[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Duplicate an actor in the level.
+
+        Args:
+            name: Name of the actor to duplicate
+            new_name: Optional name for the duplicated actor
+            location: Optional [X, Y, Z] location for the duplicate
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {"name": name}
+            if new_name:
+                params["new_name"] = new_name
+            if location is not None:
+                params["location"] = location
+            response = unreal.send_command("duplicate_actor", params)
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_viewport_camera(
+        ctx: Context,
+        location: List[float] = None,
+        rotation: List[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Set the editor viewport camera position and rotation.
+
+        Args:
+            location: [X, Y, Z] world position
+            rotation: [Pitch, Yaw, Roll] rotation in degrees
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {}
+            if location is not None:
+                params["location"] = location
+            if rotation is not None:
+                params["rotation"] = rotation
+            response = unreal.send_command("set_viewport_camera", params)
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def get_viewport_camera(ctx: Context) -> Dict[str, Any]:
+        """Get the current editor viewport camera position and rotation."""
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("get_viewport_camera", {})
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_actor_mobility(
+        ctx: Context,
+        name: str,
+        mobility: str
+    ) -> Dict[str, Any]:
+        """
+        Set the mobility of an actor's root component.
+
+        Args:
+            name: Name of the actor
+            mobility: Mobility type - "Static", "Stationary", or "Movable"
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("set_actor_mobility", {
+                "name": name,
+                "mobility": mobility
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_actor_material(
+        ctx: Context,
+        name: str,
+        material_path: str,
+        slot: int = 0
+    ) -> Dict[str, Any]:
+        """
+        Set the material on an actor's static mesh component.
+
+        Args:
+            name: Name of the actor
+            material_path: Content path to the material
+            slot: Material slot index (default 0)
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("set_actor_material", {
+                "name": name,
+                "material_path": material_path,
+                "slot": slot
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    # ============================================================
+    # PIE / RL Tools
+    # ============================================================
+
+    @mcp.tool()
+    def add_movement_input(
+        ctx: Context,
+        actor_name: str,
+        direction: List[float] = [0.0, 1.0, 0.0],
+        scale: float = 1.0
+    ) -> dict:
+        """
+        Add movement input to a Pawn during PIE. This is a single-frame input —
+        call it each step for continuous movement.
+
+        Works on any APawn (Characters, custom pawns). The pawn's movement
+        component processes the input on the next tick.
+
+        Args:
+            actor_name: Name of the PIE pawn actor (e.g. 'BP_Character_C_0')
+            direction: World direction vector [X, Y, Z] (will be normalized by the movement component)
+            scale: Movement scale factor (0.0 to 1.0, default 1.0)
+
+        Returns:
+            Dict with current location and velocity after input
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("add_movement_input", {
+                "actor_name": actor_name,
+                "direction": direction,
+                "scale": scale
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def pawn_action(
+        ctx: Context,
+        actor_name: str,
+        action: str,
+        velocity: Optional[List[float]] = None
+    ) -> dict:
+        """
+        Execute a discrete action on a Pawn/Character during PIE.
+
+        Supported actions:
+            - jump: Make the character jump (ACharacter only)
+            - stop_jumping: Release jump (ACharacter only)
+            - crouch: Start crouching (ACharacter only)
+            - uncrouch: Stop crouching (ACharacter only)
+            - launch: Launch with a velocity vector (provide 'velocity' param)
+
+        Args:
+            actor_name: Name of the PIE pawn actor (e.g. 'BP_Character_C_0')
+            action: Action to perform (jump, stop_jumping, crouch, uncrouch, launch)
+            velocity: [X, Y, Z] velocity for 'launch' action only
+
+        Returns:
+            Dict with current location, velocity, and state flags
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {
+                "actor_name": actor_name,
+                "action": action
+            }
+            if velocity is not None:
+                params["velocity"] = velocity
+            response = unreal.send_command("pawn_action", params)
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
 
     logger.info("Editor tools registered successfully")

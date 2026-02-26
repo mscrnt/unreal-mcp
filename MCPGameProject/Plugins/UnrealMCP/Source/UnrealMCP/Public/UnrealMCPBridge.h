@@ -13,6 +13,11 @@
 #include "Commands/UnrealMCPBlueprintNodeCommands.h"
 #include "Commands/UnrealMCPProjectCommands.h"
 #include "Commands/UnrealMCPUMGCommands.h"
+#include "Commands/UnrealMCPLevelCommands.h"
+#include "Commands/UnrealMCPMaterialCommands.h"
+#include "Commands/UnrealMCPAssetCommands.h"
+#include "Commands/UnrealMCPGameplayCommands.h"
+#include "Commands/UnrealMCPAnimBlueprintCommands.h"
 #include "UnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;
@@ -61,4 +66,9 @@ private:
 	TSharedPtr<FUnrealMCPBlueprintNodeCommands> BlueprintNodeCommands;
 	TSharedPtr<FUnrealMCPProjectCommands> ProjectCommands;
 	TSharedPtr<FUnrealMCPUMGCommands> UMGCommands;
+	TSharedPtr<FUnrealMCPLevelCommands> LevelCommands;
+	TSharedPtr<FUnrealMCPMaterialCommands> MaterialCommands;
+	TSharedPtr<FUnrealMCPAssetCommands> AssetCommands;
+	TSharedPtr<FUnrealMCPGameplayCommands> GameplayCommands;
+	TSharedPtr<FUnrealMCPAnimBlueprintCommands> AnimBlueprintCommands;
 }; 

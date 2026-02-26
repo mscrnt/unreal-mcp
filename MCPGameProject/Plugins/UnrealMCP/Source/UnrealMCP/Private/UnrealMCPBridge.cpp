@@ -57,6 +57,10 @@
 #include "Commands/UnrealMCPProjectCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "Commands/UnrealMCPUMGCommands.h"
+#include "Commands/UnrealMCPLevelCommands.h"
+#include "Commands/UnrealMCPMaterialCommands.h"
+#include "Commands/UnrealMCPAssetCommands.h"
+#include "Commands/UnrealMCPGameplayCommands.h"
 
 // Default settings
 #define MCP_SERVER_HOST "127.0.0.1"
@@ -69,6 +73,11 @@ UUnrealMCPBridge::UUnrealMCPBridge()
     BlueprintNodeCommands = MakeShared<FUnrealMCPBlueprintNodeCommands>();
     ProjectCommands = MakeShared<FUnrealMCPProjectCommands>();
     UMGCommands = MakeShared<FUnrealMCPUMGCommands>();
+    LevelCommands = MakeShared<FUnrealMCPLevelCommands>();
+    MaterialCommands = MakeShared<FUnrealMCPMaterialCommands>();
+    AssetCommands = MakeShared<FUnrealMCPAssetCommands>();
+    GameplayCommands = MakeShared<FUnrealMCPGameplayCommands>();
+    AnimBlueprintCommands = MakeShared<FUnrealMCPAnimBlueprintCommands>();
 }
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
@@ -78,6 +87,10 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     BlueprintNodeCommands.Reset();
     ProjectCommands.Reset();
     UMGCommands.Reset();
+    LevelCommands.Reset();
+    MaterialCommands.Reset();
+    AssetCommands.Reset();
+    GameplayCommands.Reset();
 }
 
 // Initialize subsystem
@@ -120,8 +133,16 @@ void UUnrealMCPBridge::StartServer()
         return;
     }
 
-    // Create listener socket
-    TSharedPtr<FSocket> NewListenerSocket = MakeShareable(SocketSubsystem->CreateSocket(NAME_Stream, TEXT("UnrealMCPListener"), false));
+    // Create listener socket with custom deleter that properly calls DestroySocket
+    TSharedPtr<FSocket> NewListenerSocket = MakeShareable(
+        SocketSubsystem->CreateSocket(NAME_Stream, TEXT("UnrealMCPListener"), false),
+        [](FSocket* Socket) {
+            if (Socket)
+            {
+                ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Socket);
+            }
+        }
+    );
     if (!NewListenerSocket.IsValid())
     {
         UE_LOG(LogTemp, Error, TEXT("UnrealMCPBridge: Failed to create listener socket"));
@@ -184,16 +205,14 @@ void UUnrealMCPBridge::StopServer()
         ServerThread = nullptr;
     }
 
-    // Close sockets
+    // Close sockets - Reset() triggers the custom deleter which calls DestroySocket
     if (ConnectionSocket.IsValid())
     {
-        ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ConnectionSocket.Get());
         ConnectionSocket.Reset();
     }
 
     if (ListenerSocket.IsValid())
     {
-        ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ListenerSocket.Get());
         ListenerSocket.Reset();
     }
 
@@ -233,8 +252,17 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_actor_properties") ||
                      CommandType == TEXT("set_actor_property") ||
                      CommandType == TEXT("spawn_blueprint_actor") ||
-                     CommandType == TEXT("focus_viewport") || 
-                     CommandType == TEXT("take_screenshot"))
+                     CommandType == TEXT("focus_viewport") ||
+                     CommandType == TEXT("take_screenshot") ||
+                     CommandType == TEXT("select_actors") ||
+                     CommandType == TEXT("get_selected_actors") ||
+                     CommandType == TEXT("duplicate_actor") ||
+                     CommandType == TEXT("set_viewport_camera") ||
+                     CommandType == TEXT("get_viewport_camera") ||
+                     CommandType == TEXT("set_actor_mobility") ||
+                     CommandType == TEXT("set_actor_material") ||
+                     CommandType == TEXT("add_movement_input") ||
+                     CommandType == TEXT("pawn_action"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }
@@ -259,7 +287,19 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("add_blueprint_input_action_node") ||
                      CommandType == TEXT("add_blueprint_function_node") ||
                      CommandType == TEXT("add_blueprint_get_component_node") ||
-                     CommandType == TEXT("add_blueprint_variable"))
+                     CommandType == TEXT("add_blueprint_variable") ||
+                     CommandType == TEXT("add_blueprint_branch_node") ||
+                     CommandType == TEXT("add_blueprint_for_loop_node") ||
+                     CommandType == TEXT("add_blueprint_delay_node") ||
+                     CommandType == TEXT("add_blueprint_print_string_node") ||
+                     CommandType == TEXT("add_blueprint_set_timer_node") ||
+                     CommandType == TEXT("add_blueprint_custom_event_node") ||
+                     CommandType == TEXT("add_blueprint_variable_get_node") ||
+                     CommandType == TEXT("add_blueprint_variable_set_node") ||
+                     CommandType == TEXT("set_node_pin_default_value") ||
+                     CommandType == TEXT("add_blueprint_math_node") ||
+                     CommandType == TEXT("remove_blueprint_variable") ||
+                     CommandType == TEXT("change_blueprint_variable_type"))
             {
                 ResultJson = BlueprintNodeCommands->HandleCommand(CommandType, Params);
             }
@@ -277,6 +317,75 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("add_widget_to_viewport"))
             {
                 ResultJson = UMGCommands->HandleCommand(CommandType, Params);
+            }
+            // Level & World Commands
+            else if (CommandType == TEXT("new_level") ||
+                     CommandType == TEXT("load_level") ||
+                     CommandType == TEXT("save_level") ||
+                     CommandType == TEXT("save_all_levels") ||
+                     CommandType == TEXT("get_current_level") ||
+                     CommandType == TEXT("play_in_editor") ||
+                     CommandType == TEXT("stop_play_in_editor") ||
+                     CommandType == TEXT("is_playing") ||
+                     CommandType == TEXT("execute_console_command") ||
+                     CommandType == TEXT("build_lighting") ||
+                     CommandType == TEXT("set_world_settings"))
+            {
+                ResultJson = LevelCommands->HandleCommand(CommandType, Params);
+            }
+            // Material Commands
+            else if (CommandType == TEXT("create_material") ||
+                     CommandType == TEXT("create_material_instance") ||
+                     CommandType == TEXT("set_material_scalar_param") ||
+                     CommandType == TEXT("set_material_vector_param") ||
+                     CommandType == TEXT("set_material_texture_param") ||
+                     CommandType == TEXT("add_material_expression") ||
+                     CommandType == TEXT("connect_material_expressions") ||
+                     CommandType == TEXT("connect_material_property") ||
+                     CommandType == TEXT("apply_material_to_actor") ||
+                     CommandType == TEXT("recompile_material"))
+            {
+                ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
+            }
+            // Asset Commands
+            else if (CommandType == TEXT("list_assets") ||
+                     CommandType == TEXT("find_asset") ||
+                     CommandType == TEXT("does_asset_exist") ||
+                     CommandType == TEXT("duplicate_asset") ||
+                     CommandType == TEXT("delete_asset_file") ||
+                     CommandType == TEXT("rename_asset") ||
+                     CommandType == TEXT("create_folder") ||
+                     CommandType == TEXT("import_asset") ||
+                     CommandType == TEXT("save_asset"))
+            {
+                // Map delete_asset_file to the handler's delete_asset
+                FString ActualCommand = CommandType;
+                if (CommandType == TEXT("delete_asset_file"))
+                {
+                    ActualCommand = TEXT("delete_asset");
+                }
+                ResultJson = AssetCommands->HandleCommand(ActualCommand, Params);
+            }
+            // Gameplay / Project Settings Commands
+            else if (CommandType == TEXT("set_default_game_mode") ||
+                     CommandType == TEXT("set_default_map") ||
+                     CommandType == TEXT("create_enhanced_input_action") ||
+                     CommandType == TEXT("create_input_mapping_context") ||
+                     CommandType == TEXT("set_project_setting") ||
+                     CommandType == TEXT("get_project_setting"))
+            {
+                ResultJson = GameplayCommands->HandleCommand(CommandType, Params);
+            }
+            // AnimBlueprint Commands
+            else if (CommandType == TEXT("create_anim_blueprint") ||
+                     CommandType == TEXT("add_anim_state_machine") ||
+                     CommandType == TEXT("add_anim_state") ||
+                     CommandType == TEXT("set_anim_state_animation") ||
+                     CommandType == TEXT("add_anim_transition") ||
+                     CommandType == TEXT("set_anim_transition_rule") ||
+                     CommandType == TEXT("get_anim_blueprint_info"))
+            {
+                ResultJson = AnimBlueprintCommands->HandleCommand(CommandType, Params);
             }
             else
             {

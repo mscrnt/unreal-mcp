@@ -48,8 +48,8 @@ class UnrealConnection:
             
             logger.info(f"Connecting to Unreal at {UNREAL_HOST}:{UNREAL_PORT}...")
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(5)  # 5 second timeout
-            
+            self.socket.settimeout(30)  # 30 second connect timeout
+
             # Set socket options for better stability
             self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -81,7 +81,7 @@ class UnrealConnection:
     def receive_full_response(self, sock, buffer_size=4096) -> bytes:
         """Receive a complete response from Unreal, handling chunked data."""
         chunks = []
-        sock.settimeout(5)  # 5 second timeout
+        sock.settimeout(30)  # 30 second receive timeout (LoadObject can be slow)
         try:
             while True:
                 chunk = sock.recv(buffer_size)
@@ -271,104 +271,129 @@ from tools.blueprint_tools import register_blueprint_tools
 from tools.node_tools import register_blueprint_node_tools
 from tools.project_tools import register_project_tools
 from tools.umg_tools import register_umg_tools
+from tools.level_tools import register_level_tools
+from tools.material_tools import register_material_tools
+from tools.asset_tools import register_asset_tools
+from tools.anim_tools import register_anim_tools
 
 # Register tools
 register_editor_tools(mcp)
 register_blueprint_tools(mcp)
 register_blueprint_node_tools(mcp)
 register_project_tools(mcp)
-register_umg_tools(mcp)  
+register_umg_tools(mcp)
+register_level_tools(mcp)
+register_material_tools(mcp)
+register_asset_tools(mcp)
+register_anim_tools(mcp)
 
 @mcp.prompt()
 def info():
     """Information about available Unreal MCP tools and best practices."""
     return """
     # Unreal MCP Server Tools and Best Practices
-    
-    ## UMG (Widget Blueprint) Tools
-    - `create_umg_widget_blueprint(widget_name, parent_class="UserWidget", path="/Game/UI")` 
-      Create a new UMG Widget Blueprint
-    - `add_text_block_to_widget(widget_name, text_block_name, text="", position=[0,0], size=[200,50], font_size=12, color=[1,1,1,1])`
-      Add a Text Block widget with customizable properties
-    - `add_button_to_widget(widget_name, button_name, text="", position=[0,0], size=[200,50], font_size=12, color=[1,1,1,1], background_color=[0.1,0.1,0.1,1])`
-      Add a Button widget with text and styling
-    - `bind_widget_event(widget_name, widget_component_name, event_name, function_name="")`
-      Bind events like OnClicked to functions
-    - `add_widget_to_viewport(widget_name, z_order=0)`
-      Add widget instance to game viewport
-    - `set_text_block_binding(widget_name, text_block_name, binding_property, binding_type="Text")`
-      Set up dynamic property binding for text blocks
+
+    ## Level & World Management
+    - `new_level(asset_path, template)` - Create new level (optionally from template)
+    - `load_level(level_path)` - Load an existing level
+    - `save_level()` - Save current level
+    - `save_all_levels()` - Save all dirty levels
+    - `get_current_level()` - Get current level name and path
+    - `play_in_editor()` - Start Play-In-Editor (PIE)
+    - `stop_play_in_editor()` - Stop PIE session
+    - `is_playing()` - Check if PIE is active
+    - `execute_console_command(command)` - Run a console command
+    - `build_lighting(quality, with_reflection_captures)` - Build level lighting
+    - `set_world_settings(game_mode, kill_z)` - Configure world settings
 
     ## Editor Tools
-    ### Viewport and Screenshots
-    - `focus_viewport(target, location, distance, orientation)` - Focus viewport
-    - `take_screenshot(filename, show_ui, resolution)` - Capture screenshots
-
     ### Actor Management
-    - `get_actors_in_level()` - List all actors in current level
-    - `find_actors_by_name(pattern)` - Find actors by name pattern
-    - `spawn_actor(name, type, location=[0,0,0], rotation=[0,0,0], scale=[1,1,1])` - Create actors
+    - `get_actors_in_level()` - List all actors
+    - `find_actors_by_name(pattern)` - Find actors by name
+    - `spawn_actor(name, type, location, rotation)` - Create actors
     - `delete_actor(name)` - Remove actors
-    - `set_actor_transform(name, location, rotation, scale)` - Modify actor transform
-    - `get_actor_properties(name)` - Get actor properties
-    
+    - `set_actor_transform(name, location, rotation, scale)` - Set transform
+    - `get_actor_properties(name)` - Get properties
+    - `set_actor_property(name, property_name, property_value)` - Set property
+    - `spawn_blueprint_actor(blueprint_name, actor_name)` - Spawn BP actor
+    ### Selection & Viewport
+    - `select_actors(names)` - Select actors by name list
+    - `get_selected_actors()` - Get current selection
+    - `duplicate_actor(name, new_name, location)` - Duplicate an actor
+    - `set_viewport_camera(location, rotation)` - Set viewport camera
+    - `get_viewport_camera()` - Get viewport camera position
+    - `set_actor_mobility(name, mobility)` - Set Static/Stationary/Movable
+    - `set_actor_material(name, material_path, slot)` - Apply material to actor
+
+    ## Material System
+    - `create_material(name, path)` - Create new material
+    - `create_material_instance(name, parent_material, path)` - Create material instance
+    - `set_material_scalar_param(material_name, param_name, value)` - Set scalar param
+    - `set_material_vector_param(material_name, param_name, value)` - Set color param
+    - `set_material_texture_param(material_name, param_name, texture_path)` - Set texture param
+    - `add_material_expression(material_name, expression_type, ...)` - Add graph node
+    - `connect_material_expressions(material_name, from_index, to_index, ...)` - Connect nodes
+    - `connect_material_property(material_name, from_index, property)` - Connect to output
+    - `apply_material_to_actor(actor_name, material_path, slot_index)` - Apply to mesh
+    - `recompile_material(material_name)` - Recompile after changes
+
+    ## Asset Management
+    - `list_assets(path, class_filter, recursive)` - List assets in folder
+    - `find_asset(name)` - Search assets by name
+    - `does_asset_exist(path)` - Check if asset exists
+    - `duplicate_asset(source_path, dest_path)` - Duplicate asset
+    - `delete_asset(path)` - Delete asset
+    - `rename_asset(source_path, dest_path)` - Rename/move asset
+    - `create_folder(path)` - Create content folder
+    - `import_asset(source_file, dest_path, dest_name)` - Import external file
+    - `save_asset(path)` - Save specific asset
+
     ## Blueprint Management
-    - `create_blueprint(name, parent_class)` - Create new Blueprint classes
+    - `create_blueprint(name, parent_class)` - Create Blueprint class
     - `add_component_to_blueprint(blueprint_name, component_type, component_name)` - Add components
-    - `set_static_mesh_properties(blueprint_name, component_name, static_mesh)` - Configure meshes
-    - `set_physics_properties(blueprint_name, component_name)` - Configure physics
-    - `compile_blueprint(blueprint_name)` - Compile Blueprint changes
-    - `set_blueprint_property(blueprint_name, property_name, property_value)` - Set properties
-    - `set_pawn_properties(blueprint_name)` - Configure Pawn settings
-    - `spawn_blueprint_actor(blueprint_name, actor_name)` - Spawn Blueprint actors
-    
+    - `set_static_mesh_properties(blueprint_name, component_name, static_mesh)` - Set mesh
+    - `set_physics_properties(blueprint_name, component_name)` - Set physics
+    - `compile_blueprint(blueprint_name)` - Compile changes
+    - `set_blueprint_property(blueprint_name, property_name, property_value)` - Set property
+
     ## Blueprint Node Management
-    - `add_blueprint_event_node(blueprint_name, event_type)` - Add event nodes
-    - `add_blueprint_input_action_node(blueprint_name, action_name)` - Add input nodes
-    - `add_blueprint_function_node(blueprint_name, target, function_name)` - Add function nodes
-    - `connect_blueprint_nodes(blueprint_name, source_node_id, source_pin, target_node_id, target_pin)` - Connect nodes
-    - `add_blueprint_variable(blueprint_name, variable_name, variable_type)` - Add variables
-    - `add_blueprint_get_self_component_reference(blueprint_name, component_name)` - Add component refs
-    - `add_blueprint_self_reference(blueprint_name)` - Add self references
+    ### Basic Nodes
+    - `add_blueprint_event_node(blueprint_name, event_name)` - Add event (ReceiveBeginPlay, ReceiveTick)
+    - `add_blueprint_input_action_node(blueprint_name, action_name)` - Input action event
+    - `add_blueprint_function_node(blueprint_name, target, function_name)` - Function call
+    - `connect_blueprint_nodes(blueprint_name, source_node_id, source_pin, target_node_id, target_pin)` - Wire nodes
+    - `add_blueprint_variable(blueprint_name, variable_name, variable_type)` - Add variable
+    - `add_blueprint_get_self_component_reference(blueprint_name, component_name)` - Get component ref
+    - `add_blueprint_self_reference(blueprint_name)` - Get self ref
     - `find_blueprint_nodes(blueprint_name, node_type, event_type)` - Find nodes
-    
-    ## Project Tools
-    - `create_input_mapping(action_name, key, input_type)` - Create input mappings
-    
-    ## Best Practices
-    
-    ### UMG Widget Development
-    - Create widgets with descriptive names that reflect their purpose
-    - Use consistent naming conventions for widget components
-    - Organize widget hierarchy logically
-    - Set appropriate anchors and alignment for responsive layouts
-    - Use property bindings for dynamic updates instead of direct setting
-    - Handle widget events appropriately with meaningful function names
-    - Clean up widgets when no longer needed
-    - Test widget layouts at different resolutions
-    
-    ### Editor and Actor Management
-    - Use unique names for actors to avoid conflicts
-    - Clean up temporary actors
-    - Validate transforms before applying
-    - Check actor existence before modifications
-    - Take regular viewport screenshots during development
-    - Keep the viewport focused on relevant actors during operations
-    
-    ### Blueprint Development
-    - Compile Blueprints after changes
-    - Use meaningful names for variables and functions
-    - Organize nodes logically
-    - Test functionality in isolation
-    - Consider performance implications
-    - Document complex setups
-    
-    ### Error Handling
-    - Check command responses for success
-    - Handle errors gracefully
-    - Log important operations
-    - Validate parameters
-    - Clean up resources on errors
+    ### Advanced Nodes
+    - `add_blueprint_branch_node(blueprint_name)` - If/Else branch
+    - `add_blueprint_for_loop_node(blueprint_name, first_index, last_index)` - For loop
+    - `add_blueprint_delay_node(blueprint_name, duration)` - Delay timer
+    - `add_blueprint_print_string_node(blueprint_name, text)` - Debug print
+    - `add_blueprint_set_timer_node(blueprint_name, function_name, time, looping)` - Timer
+    - `add_blueprint_custom_event_node(blueprint_name, event_name)` - Custom event
+    - `add_blueprint_variable_get_node(blueprint_name, variable_name)` - Get variable
+    - `add_blueprint_variable_set_node(blueprint_name, variable_name)` - Set variable
+    - `set_node_pin_default_value(blueprint_name, node_id, pin_name, value)` - Set pin default
+    - `add_blueprint_math_node(blueprint_name, operation)` - Math operations (+,-,*,/,>,<,==,!=)
+
+    ## UMG Widgets
+    - `create_umg_widget_blueprint(widget_name)` - Create widget BP
+    - `add_text_block_to_widget(widget_name, text_block_name)` - Add text
+    - `add_button_to_widget(widget_name, button_name)` - Add button
+    - `bind_widget_event(widget_name, widget_component_name, event_name)` - Bind event
+    - `add_widget_to_viewport(widget_name)` - Show widget
+    - `set_text_block_binding(widget_name, text_block_name, binding_property)` - Bind text
+
+    ## Project & Input Settings
+    - `create_input_mapping(action_name, key, input_type)` - Legacy input mapping
+    - `set_default_game_mode(game_mode_class)` - Set game mode
+    - `set_default_map(map_path, map_type)` - Set default map
+    - `create_enhanced_input_action(name, value_type)` - Create Enhanced Input action
+    - `create_input_mapping_context(name, mappings)` - Create input mapping context
+    - `set_project_setting(section, key, value)` - Set config value
+    - `get_project_setting(section, key)` - Get config value
     """
 
 # Run the server

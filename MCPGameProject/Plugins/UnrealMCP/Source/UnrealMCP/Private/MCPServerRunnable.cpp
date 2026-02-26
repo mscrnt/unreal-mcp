@@ -12,7 +12,7 @@
 #include "HAL/PlatformTime.h"
 
 // Buffer size for receiving data
-const int32 BufferSize = 8192;
+const int32 MCPRecvBufferSize = 8192;
 
 FMCPServerRunnable::FMCPServerRunnable(UUnrealMCPBridge* InBridge, TSharedPtr<FSocket> InListenerSocket)
     : Bridge(InBridge)
@@ -45,7 +45,15 @@ uint32 FMCPServerRunnable::Run()
         {
             UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Client connection pending, accepting..."));
             
-            ClientSocket = MakeShareable(ListenerSocket->Accept(TEXT("MCPClient")));
+            ClientSocket = MakeShareable(
+                ListenerSocket->Accept(TEXT("MCPClient")),
+                [](FSocket* Socket) {
+                    if (Socket)
+                    {
+                        ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Socket);
+                    }
+                }
+            );
             if (ClientSocket.IsValid())
             {
                 UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Client connection accepted"));
@@ -89,9 +97,11 @@ uint32 FMCPServerRunnable::Run()
                                 // Log response for debugging
                                 UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Sending response: %s"), *Response);
                                 
-                                // Send response
+                                // Send response - use proper UTF-8 byte length (not TCHAR count)
+                                auto Utf8Response = StringCast<ANSICHAR>(*Response);
+                                int32 Utf8Len = FCStringAnsi::Strlen(Utf8Response.Get());
                                 int32 BytesSent = 0;
-                                if (!ClientSocket->Send((uint8*)TCHAR_TO_UTF8(*Response), Response.Len(), BytesSent))
+                                if (!ClientSocket->Send((const uint8*)Utf8Response.Get(), Utf8Len, BytesSent))
                                 {
                                     UE_LOG(LogTemp, Warning, TEXT("MCPServerRunnable: Failed to send response"));
                                 }
@@ -311,10 +321,13 @@ void FMCPServerRunnable::ProcessMessage(TSharedPtr<FSocket> Client, const FStrin
     // Send response with newline terminator
     Response += TEXT("\n");
     int32 BytesSent = 0;
-    
+
     UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Sending response: %s"), *Response);
-    
-    if (!Client->Send((uint8*)TCHAR_TO_UTF8(*Response), Response.Len(), BytesSent))
+
+    // Use proper UTF-8 byte length (not TCHAR character count)
+    auto Utf8Response = StringCast<ANSICHAR>(*Response);
+    int32 Utf8Len = FCStringAnsi::Strlen(Utf8Response.Get());
+    if (!Client->Send((const uint8*)Utf8Response.Get(), Utf8Len, BytesSent))
     {
         UE_LOG(LogTemp, Error, TEXT("MCPServerRunnable: Failed to send response"));
     }

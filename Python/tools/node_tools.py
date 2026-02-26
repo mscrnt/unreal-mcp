@@ -427,4 +427,386 @@ def register_blueprint_node_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
     
+    # ============================================================
+    # Phase 4: Advanced Blueprint Nodes
+    # ============================================================
+
+    @mcp.tool()
+    def add_blueprint_branch_node(
+        ctx: Context,
+        blueprint_name: str,
+        node_position: List[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a Branch (if/else) node to a Blueprint's event graph.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            node_position: Optional [X, Y] position in the graph
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            if node_position is None:
+                node_position = [0, 0]
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("add_blueprint_branch_node", {
+                "blueprint_name": blueprint_name,
+                "node_position": node_position
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_blueprint_for_loop_node(
+        ctx: Context,
+        blueprint_name: str,
+        first_index: int = 0,
+        last_index: int = 0,
+        node_position: List[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a ForLoop macro node to a Blueprint's event graph.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            first_index: Starting index for the loop
+            last_index: Ending index for the loop
+            node_position: Optional [X, Y] position in the graph
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            if node_position is None:
+                node_position = [0, 0]
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("add_blueprint_for_loop_node", {
+                "blueprint_name": blueprint_name,
+                "first_index": first_index,
+                "last_index": last_index,
+                "node_position": node_position
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_blueprint_delay_node(
+        ctx: Context,
+        blueprint_name: str,
+        duration: float = 1.0,
+        node_position: List[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a Delay node to a Blueprint's event graph.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            duration: Delay duration in seconds
+            node_position: Optional [X, Y] position in the graph
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            if node_position is None:
+                node_position = [0, 0]
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("add_blueprint_delay_node", {
+                "blueprint_name": blueprint_name,
+                "duration": duration,
+                "node_position": node_position
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_blueprint_print_string_node(
+        ctx: Context,
+        blueprint_name: str,
+        text: str = "Hello",
+        node_position: List[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a PrintString node to a Blueprint's event graph (useful for debugging).
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            text: Default text to print
+            node_position: Optional [X, Y] position in the graph
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            if node_position is None:
+                node_position = [0, 0]
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("add_blueprint_print_string_node", {
+                "blueprint_name": blueprint_name,
+                "text": text,
+                "node_position": node_position
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_blueprint_set_timer_node(
+        ctx: Context,
+        blueprint_name: str,
+        function_name: str,
+        time: float = 1.0,
+        looping: bool = False,
+        node_position: List[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a SetTimerByFunctionName node to a Blueprint's event graph.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            function_name: Name of the function to call on timer
+            time: Timer interval in seconds
+            looping: Whether the timer should loop
+            node_position: Optional [X, Y] position in the graph
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            if node_position is None:
+                node_position = [0, 0]
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("add_blueprint_set_timer_node", {
+                "blueprint_name": blueprint_name,
+                "function_name": function_name,
+                "time": time,
+                "looping": looping,
+                "node_position": node_position
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_blueprint_custom_event_node(
+        ctx: Context,
+        blueprint_name: str,
+        event_name: str,
+        node_position: List[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a Custom Event node to a Blueprint's event graph.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            event_name: Name for the custom event
+            node_position: Optional [X, Y] position in the graph
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            if node_position is None:
+                node_position = [0, 0]
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("add_blueprint_custom_event_node", {
+                "blueprint_name": blueprint_name,
+                "event_name": event_name,
+                "node_position": node_position
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_blueprint_variable_get_node(
+        ctx: Context,
+        blueprint_name: str,
+        variable_name: str,
+        node_position: List[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a Variable Get node to a Blueprint's event graph.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            variable_name: Name of the variable to get
+            node_position: Optional [X, Y] position in the graph
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            if node_position is None:
+                node_position = [0, 0]
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("add_blueprint_variable_get_node", {
+                "blueprint_name": blueprint_name,
+                "variable_name": variable_name,
+                "node_position": node_position
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_blueprint_variable_set_node(
+        ctx: Context,
+        blueprint_name: str,
+        variable_name: str,
+        node_position: List[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a Variable Set node to a Blueprint's event graph.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            variable_name: Name of the variable to set
+            node_position: Optional [X, Y] position in the graph
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            if node_position is None:
+                node_position = [0, 0]
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("add_blueprint_variable_set_node", {
+                "blueprint_name": blueprint_name,
+                "variable_name": variable_name,
+                "node_position": node_position
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_node_pin_default_value(
+        ctx: Context,
+        blueprint_name: str,
+        node_id: str,
+        pin_name: str,
+        value: str
+    ) -> Dict[str, Any]:
+        """
+        Set the default value of a pin on a Blueprint node.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            node_id: GUID of the node
+            pin_name: Name of the pin to set
+            value: String value to set as default
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("set_node_pin_default_value", {
+                "blueprint_name": blueprint_name,
+                "node_id": node_id,
+                "pin_name": pin_name,
+                "value": value
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_blueprint_math_node(
+        ctx: Context,
+        blueprint_name: str,
+        operation: str,
+        node_position: List[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Add a math operation node to a Blueprint's event graph.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            operation: Math operation. Integer: +, -, *, /, >, <, ==, !=
+                       Float: +f, -f, *f, /f, >f, <f
+                       Named: Add, Subtract, Multiply, Divide, Greater, Less, Equal, NotEqual,
+                       AddFloat, SubtractFloat, MultiplyFloat, DivideFloat, GreaterFloat, LessFloat
+            node_position: Optional [X, Y] position in the graph
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            if node_position is None:
+                node_position = [0, 0]
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("add_blueprint_math_node", {
+                "blueprint_name": blueprint_name,
+                "operation": operation,
+                "node_position": node_position
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def remove_blueprint_variable(
+        ctx: Context,
+        blueprint_name: str,
+        variable_name: str
+    ) -> dict:
+        """
+        Remove a variable from a Blueprint. Also removes all graph nodes referencing it.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            variable_name: Name of the variable to remove
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("remove_blueprint_variable", {
+                "blueprint_name": blueprint_name,
+                "variable_name": variable_name
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def change_blueprint_variable_type(
+        ctx: Context,
+        blueprint_name: str,
+        variable_name: str,
+        new_type: str
+    ) -> dict:
+        """
+        Change the type of an existing Blueprint variable.
+
+        WARNING: This will break any existing node connections using the old type.
+        Consider removing and recreating nodes that reference the variable after changing its type.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            variable_name: Name of the variable to change
+            new_type: New type. Options: Boolean, Integer, Float, Double, String, Vector, Rotator, Name, Text, Byte
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("change_blueprint_variable_type", {
+                "blueprint_name": blueprint_name,
+                "variable_name": variable_name,
+                "new_type": new_type
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     logger.info("Blueprint node tools registered successfully")

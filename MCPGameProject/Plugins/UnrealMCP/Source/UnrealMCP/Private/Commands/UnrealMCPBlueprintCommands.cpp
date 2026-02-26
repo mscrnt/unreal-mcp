@@ -12,6 +12,7 @@
 #include "Components/SphereComponent.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/CompilerResultsLog.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
 #include "UObject/Field.h"
@@ -20,6 +21,10 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/GameModeBase.h"
+#include "GameFramework/PlayerController.h"
+#include "UObject/UObjectIterator.h"
 
 FUnrealMCPBlueprintCommands::FUnrealMCPBlueprintCommands()
 {
@@ -97,45 +102,67 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCreateBlueprint(const
     // Try to find the specified parent class
     if (!ParentClass.IsEmpty())
     {
+        // Normalize: strip leading "A" prefix if present to get the UE class name
         FString ClassName = ParentClass;
-        if (!ClassName.StartsWith(TEXT("A")))
+        FString UEClassName = ParentClass; // Without A prefix, used for LoadClass paths
+        if (ClassName.StartsWith(TEXT("A")) && ClassName.Len() > 1 && FChar::IsUpper(ClassName[1]))
         {
-            ClassName = TEXT("A") + ClassName;
+            UEClassName = ClassName.Mid(1); // Strip the A prefix
         }
-        
-        // First try direct StaticClass lookup for common classes
+
+        // Direct StaticClass lookup for common classes (most reliable)
         UClass* FoundClass = nullptr;
-        if (ClassName == TEXT("APawn"))
-        {
-            FoundClass = APawn::StaticClass();
-        }
-        else if (ClassName == TEXT("AActor"))
+        if (UEClassName == TEXT("Actor"))
         {
             FoundClass = AActor::StaticClass();
         }
+        else if (UEClassName == TEXT("Pawn"))
+        {
+            FoundClass = APawn::StaticClass();
+        }
+        else if (UEClassName == TEXT("Character"))
+        {
+            FoundClass = ACharacter::StaticClass();
+        }
+        else if (UEClassName == TEXT("GameModeBase"))
+        {
+            FoundClass = AGameModeBase::StaticClass();
+        }
+        else if (UEClassName == TEXT("PlayerController"))
+        {
+            FoundClass = APlayerController::StaticClass();
+        }
         else
         {
-            // Try loading the class using LoadClass which is more reliable than FindObject
-            const FString ClassPath = FString::Printf(TEXT("/Script/Engine.%s"), *ClassName);
+            // Try loading by UE class path (paths use unprefixed names: /Script/Engine.Character, not ACharacter)
+            const FString ClassPath = FString::Printf(TEXT("/Script/Engine.%s"), *UEClassName);
             FoundClass = LoadClass<AActor>(nullptr, *ClassPath);
-            
+
             if (!FoundClass)
             {
-                // Try alternate paths if not found
-                const FString GameClassPath = FString::Printf(TEXT("/Script/Game.%s"), *ClassName);
+                // Try GameplayAbilities, other modules
+                const FString GameClassPath = FString::Printf(TEXT("/Script/Game.%s"), *UEClassName);
                 FoundClass = LoadClass<AActor>(nullptr, *GameClassPath);
+            }
+            if (!FoundClass)
+            {
+                // Last resort: try FindFirstObject with original name
+                FoundClass = FindFirstObject<UClass>(*ClassName);
+                if (!FoundClass)
+                {
+                    FoundClass = FindFirstObject<UClass>(*UEClassName);
+                }
             }
         }
 
         if (FoundClass)
         {
             SelectedParentClass = FoundClass;
-            UE_LOG(LogTemp, Log, TEXT("Successfully set parent class to '%s'"), *ClassName);
+            UE_LOG(LogTemp, Log, TEXT("Successfully set parent class to '%s'"), *FoundClass->GetName());
         }
         else
         {
-            UE_LOG(LogTemp, Warning, TEXT("Could not find specified parent class '%s' at paths: /Script/Engine.%s or /Script/Game.%s, defaulting to AActor"), 
-                *ClassName, *ClassName, *ClassName);
+            UE_LOG(LogTemp, Warning, TEXT("Could not find parent class '%s', defaulting to AActor"), *ParentClass);
         }
     }
     
@@ -156,6 +183,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCreateBlueprint(const
         TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
         ResultObj->SetStringField(TEXT("name"), AssetName);
         ResultObj->SetStringField(TEXT("path"), PackagePath + AssetName);
+        ResultObj->SetStringField(TEXT("parent_class"), SelectedParentClass->GetName());
         return ResultObj;
     }
 
@@ -194,26 +222,26 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddComponentToBluepri
     UClass* ComponentClass = nullptr;
 
     // Try to find the class with exact name first
-    ComponentClass = FindObject<UClass>(ANY_PACKAGE, *ComponentType);
+    ComponentClass = FindFirstObject<UClass>(*ComponentType);
     
     // If not found, try with "Component" suffix
     if (!ComponentClass && !ComponentType.EndsWith(TEXT("Component")))
     {
         FString ComponentTypeWithSuffix = ComponentType + TEXT("Component");
-        ComponentClass = FindObject<UClass>(ANY_PACKAGE, *ComponentTypeWithSuffix);
+        ComponentClass = FindFirstObject<UClass>(*ComponentTypeWithSuffix);
     }
     
     // If still not found, try with "U" prefix
     if (!ComponentClass && !ComponentType.StartsWith(TEXT("U")))
     {
         FString ComponentTypeWithPrefix = TEXT("U") + ComponentType;
-        ComponentClass = FindObject<UClass>(ANY_PACKAGE, *ComponentTypeWithPrefix);
+        ComponentClass = FindFirstObject<UClass>(*ComponentTypeWithPrefix);
         
         // Try with both prefix and suffix
         if (!ComponentClass && !ComponentType.EndsWith(TEXT("Component")))
         {
             FString ComponentTypeWithBoth = TEXT("U") + ComponentType + TEXT("Component");
-            ComponentClass = FindObject<UClass>(ANY_PACKAGE, *ComponentTypeWithBoth);
+            ComponentClass = FindFirstObject<UClass>(*ComponentTypeWithBoth);
         }
     }
     
@@ -245,15 +273,60 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddComponentToBluepri
             }
         }
 
-        // Add to root if no parent specified
-        Blueprint->SimpleConstructionScript->AddNode(NewNode);
+        // Check for optional parent_component parameter
+        FString ParentComponentName;
+        Params->TryGetStringField(TEXT("parent_component"), ParentComponentName);
 
-        // Compile the blueprint
-        FKismetEditorUtilities::CompileBlueprint(Blueprint);
+        // Attach to parent or existing SCS root, or add as new root
+        bool bAttached = false;
+
+        // If a parent component is specified, find and attach to it
+        if (!ParentComponentName.IsEmpty())
+        {
+            for (USCS_Node* ExistingNode : Blueprint->SimpleConstructionScript->GetAllNodes())
+            {
+                if (ExistingNode->GetVariableName().ToString() == ParentComponentName)
+                {
+                    ExistingNode->AddChildNode(NewNode);
+                    bAttached = true;
+                    break;
+                }
+            }
+        }
+
+        // If no parent specified (or not found), attach to existing SCS root if one exists
+        if (!bAttached)
+        {
+            const TArray<USCS_Node*>& RootNodes = Blueprint->SimpleConstructionScript->GetRootNodes();
+            if (RootNodes.Num() > 0 && SceneComponent != nullptr)
+            {
+                // Attach scene components to the first root node
+                RootNodes[0]->AddChildNode(NewNode);
+                bAttached = true;
+            }
+        }
+
+        // If still not attached, add as a new root node
+        if (!bAttached)
+        {
+            Blueprint->SimpleConstructionScript->AddNode(NewNode);
+        }
+
+        // Mark blueprint as modified — do NOT compile here; use compile_blueprint tool separately
+        Blueprint->Status = BS_Dirty;
+        FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
         TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
         ResultObj->SetStringField(TEXT("component_name"), ComponentName);
         ResultObj->SetStringField(TEXT("component_type"), ComponentType);
+        if (bAttached)
+        {
+            ResultObj->SetStringField(TEXT("attached_to"), ParentComponentName.IsEmpty() ? TEXT("SCS root") : ParentComponentName);
+        }
+        else
+        {
+            ResultObj->SetStringField(TEXT("attached_to"), TEXT("(added as root)"));
+        }
         return ResultObj;
     }
 
@@ -322,51 +395,13 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
             Blueprint->GeneratedClass ? *Blueprint->GeneratedClass->GetName() : TEXT("NULL"));
     }
 
-    // Find the component
-    USCS_Node* ComponentNode = nullptr;
-    UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Searching for component %s in blueprint nodes"), *ComponentName);
-    
-    if (!Blueprint->SimpleConstructionScript)
-    {
-        UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - SimpleConstructionScript is NULL for blueprint %s"), *BlueprintName);
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid blueprint construction script"));
-    }
-    
-    for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
-    {
-        if (Node)
-        {
-            UE_LOG(LogTemp, Verbose, TEXT("SetComponentProperty - Found node: %s"), *Node->GetVariableName().ToString());
-            if (Node->GetVariableName().ToString() == ComponentName)
-            {
-                ComponentNode = Node;
-                break;
-            }
-        }
-        else
-        {
-            UE_LOG(LogTemp, Warning, TEXT("SetComponentProperty - Found NULL node in blueprint"));
-        }
-    }
-
-    if (!ComponentNode)
-    {
-        UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - Component not found: %s"), *ComponentName);
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Component not found: %s"), *ComponentName));
-    }
-    else
-    {
-        UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Component found: %s (Class: %s)"), 
-            *ComponentName, 
-            ComponentNode->ComponentTemplate ? *ComponentNode->ComponentTemplate->GetClass()->GetName() : TEXT("NULL"));
-    }
-
-    // Get the component template
-    UObject* ComponentTemplate = ComponentNode->ComponentTemplate;
+    // Find the component (SCS nodes + CDO inherited)
+    FString DiagInfo;
+    UObject* ComponentTemplate = FindBlueprintComponent(Blueprint, ComponentName, DiagInfo);
     if (!ComponentTemplate)
     {
-        UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - Component template is NULL for %s"), *ComponentName);
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid component template"));
+        UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - %s"), *DiagInfo);
+        return FUnrealMCPCommonUtils::CreateErrorResponse(DiagInfo);
     }
 
     // Check if this is a Spring Arm component and log special debug info
@@ -487,9 +522,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
 
             if (bSuccess)
             {
-                // Mark the blueprint as modified
+                // Mark the blueprint as modified and package dirty for persistence
                 UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Successfully set SpringArm property %s"), *PropertyName);
                 FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+                Blueprint->MarkPackageDirty();
 
                 TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
                 ResultObj->SetStringField(TEXT("component"), ComponentName);
@@ -540,9 +576,12 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
         bool bSuccess = false;
         FString ErrorMessage;
 
+        // Notify the component that it's about to be modified (enables undo/redo tracking)
+        ComponentTemplate->Modify();
+
         // Handle different property types
         UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Attempting to set property %s"), *PropertyName);
-        
+
         // Add try-catch block to catch and log any crashes
         try
         {
@@ -726,10 +765,15 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
 
         if (bSuccess)
         {
-            // Mark the blueprint as modified
-            UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Successfully set property %s on component %s"), 
+            // Notify the property system about the change and mark dirty for persistence
+            FPropertyChangedEvent PropertyChangedEvent(
+                FindFProperty<FProperty>(ComponentTemplate->GetClass(), *PropertyName));
+            ComponentTemplate->PostEditChangeProperty(PropertyChangedEvent);
+
+            UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Successfully set property %s on component %s"),
                 *PropertyName, *ComponentName);
             FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+            Blueprint->MarkPackageDirty();
 
             TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
             ResultObj->SetStringField(TEXT("component"), ComponentName);
@@ -771,23 +815,15 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPhysicsProperties(
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
     }
 
-    // Find the component
-    USCS_Node* ComponentNode = nullptr;
-    for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+    // Find the component (SCS nodes + CDO inherited)
+    FString DiagInfo;
+    UObject* FoundComponent = FindBlueprintComponent(Blueprint, ComponentName, DiagInfo);
+    if (!FoundComponent)
     {
-        if (Node && Node->GetVariableName().ToString() == ComponentName)
-        {
-            ComponentNode = Node;
-            break;
-        }
+        return FUnrealMCPCommonUtils::CreateErrorResponse(DiagInfo);
     }
 
-    if (!ComponentNode)
-    {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Component not found: %s"), *ComponentName));
-    }
-
-    UPrimitiveComponent* PrimComponent = Cast<UPrimitiveComponent>(ComponentNode->ComponentTemplate);
+    UPrimitiveComponent* PrimComponent = Cast<UPrimitiveComponent>(FoundComponent);
     if (!PrimComponent)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Component is not a primitive component"));
@@ -841,12 +877,71 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCompileBlueprint(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
     }
 
-    // Compile the blueprint
-    FKismetEditorUtilities::CompileBlueprint(Blueprint);
+    // Validate blueprint state before compiling
+    if (!Blueprint->GeneratedClass && !Blueprint->SkeletonGeneratedClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint has no generated class - may be corrupted"));
+    }
+
+    // Refresh all nodes to ensure consistent state before compilation
+    FBlueprintEditorUtils::RefreshAllNodes(Blueprint);
+
+    // Compile with safe options and capture results log
+    EBlueprintCompileOptions CompileOptions =
+        EBlueprintCompileOptions::SkipGarbageCollection | EBlueprintCompileOptions::SkipReinstancing;
+
+    FCompilerResultsLog CompileResults;
+    FKismetEditorUtilities::CompileBlueprint(Blueprint, CompileOptions, &CompileResults);
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("name"), BlueprintName);
+    ResultObj->SetStringField(TEXT("blueprint_type"), Blueprint->GetClass()->GetName());
     ResultObj->SetBoolField(TEXT("compiled"), true);
+    ResultObj->SetNumberField(TEXT("num_errors"), CompileResults.NumErrors);
+    ResultObj->SetNumberField(TEXT("num_warnings"), CompileResults.NumWarnings);
+
+    // Collect error and warning messages
+    TArray<TSharedPtr<FJsonValue>> ErrorArray;
+    TArray<TSharedPtr<FJsonValue>> WarningArray;
+
+    for (const TSharedRef<FTokenizedMessage>& Message : CompileResults.Messages)
+    {
+        FString MessageText = Message->ToText().ToString();
+        EMessageSeverity::Type Severity = Message->GetSeverity();
+
+        if (Severity == EMessageSeverity::Error)
+        {
+            ErrorArray.Add(MakeShared<FJsonValueString>(MessageText));
+        }
+        else if (Severity == EMessageSeverity::Warning || Severity == EMessageSeverity::PerformanceWarning)
+        {
+            WarningArray.Add(MakeShared<FJsonValueString>(MessageText));
+        }
+    }
+
+    if (ErrorArray.Num() > 0)
+    {
+        ResultObj->SetArrayField(TEXT("errors"), ErrorArray);
+    }
+    if (WarningArray.Num() > 0)
+    {
+        ResultObj->SetArrayField(TEXT("warnings"), WarningArray);
+    }
+
+    // Report compilation status
+    if (Blueprint->Status == BS_Error)
+    {
+        ResultObj->SetStringField(TEXT("status"), TEXT("error"));
+    }
+    else if (Blueprint->Status == BS_UpToDateWithWarnings)
+    {
+        ResultObj->SetStringField(TEXT("status"), TEXT("up_to_date_with_warnings"));
+    }
+    else if (Blueprint->Status == BS_UpToDate)
+    {
+        ResultObj->SetStringField(TEXT("status"), TEXT("up_to_date"));
+    }
+
     return ResultObj;
 }
 
@@ -943,8 +1038,14 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetBlueprintProperty(
         FString ErrorMessage;
         if (FUnrealMCPCommonUtils::SetObjectProperty(DefaultObject, PropertyName, JsonValue, ErrorMessage))
         {
-            // Mark the blueprint as modified
+            // Notify the property system about the change
+            FPropertyChangedEvent PropertyChangedEvent(
+                DefaultObject->GetClass()->FindPropertyByName(*PropertyName));
+            DefaultObject->PostEditChangeProperty(PropertyChangedEvent);
+
+            // Mark both the Blueprint and CDO package as dirty so save_asset persists changes
             FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+            Blueprint->MarkPackageDirty();
 
             TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
             ResultObj->SetStringField(TEXT("property"), PropertyName);
@@ -982,23 +1083,15 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetStaticMeshProperti
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
     }
 
-    // Find the component
-    USCS_Node* ComponentNode = nullptr;
-    for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+    // Find the component (SCS nodes + CDO inherited)
+    FString DiagInfo;
+    UObject* FoundComponent = FindBlueprintComponent(Blueprint, ComponentName, DiagInfo);
+    if (!FoundComponent)
     {
-        if (Node && Node->GetVariableName().ToString() == ComponentName)
-        {
-            ComponentNode = Node;
-            break;
-        }
+        return FUnrealMCPCommonUtils::CreateErrorResponse(DiagInfo);
     }
 
-    if (!ComponentNode)
-    {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Component not found: %s"), *ComponentName));
-    }
-
-    UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(ComponentNode->ComponentTemplate);
+    UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(FoundComponent);
     if (!MeshComponent)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Component is not a static mesh component"));
@@ -1031,6 +1124,108 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetStaticMeshProperti
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("component"), ComponentName);
     return ResultObj;
+}
+
+UObject* FUnrealMCPBlueprintCommands::FindBlueprintComponent(UBlueprint* Blueprint, const FString& ComponentName, FString& OutDiagInfo)
+{
+    if (!Blueprint)
+    {
+        OutDiagInfo = TEXT("Blueprint is null");
+        return nullptr;
+    }
+
+    // Method 1: Search SCS nodes (user-added components)
+    TArray<FString> SCSNames;
+    if (Blueprint->SimpleConstructionScript)
+    {
+        for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+        {
+            if (Node)
+            {
+                FString NodeName = Node->GetVariableName().ToString();
+                SCSNames.Add(NodeName);
+                if (NodeName == ComponentName)
+                {
+                    return Node->ComponentTemplate;
+                }
+            }
+        }
+    }
+
+    // Method 2: Search CDO default subobjects (inherited components)
+    TArray<FString> CDONames;
+    if (Blueprint->GeneratedClass)
+    {
+        UObject* CDO = Blueprint->GeneratedClass->GetDefaultObject();
+        if (CDO)
+        {
+            // 2a: GetDefaultSubobjectByName
+            UObject* SubObj = CDO->GetDefaultSubobjectByName(FName(*ComponentName));
+            if (SubObj) return SubObj;
+
+            // 2b: ForEachObjectWithOuter on Blueprint CDO
+            UObject* Found = nullptr;
+            ForEachObjectWithOuter(CDO, [&](UObject* SubObject)
+            {
+                if (SubObject)
+                {
+                    CDONames.Add(FString::Printf(TEXT("%s(%s)"), *SubObject->GetName(), *SubObject->GetClass()->GetName()));
+                    if (!Found && (SubObject->GetName() == ComponentName || SubObject->GetName().Contains(ComponentName)))
+                    {
+                        Found = SubObject;
+                    }
+                }
+            });
+            if (Found) return Found;
+
+            // 2c: Parent class CDO
+            TArray<FString> ParentNames;
+            if (Blueprint->ParentClass)
+            {
+                UObject* ParentCDO = Blueprint->ParentClass->GetDefaultObject();
+                if (ParentCDO && ParentCDO != CDO)
+                {
+                    SubObj = ParentCDO->GetDefaultSubobjectByName(FName(*ComponentName));
+                    if (SubObj) return SubObj;
+
+                    ForEachObjectWithOuter(ParentCDO, [&](UObject* SubObject)
+                    {
+                        if (SubObject)
+                        {
+                            ParentNames.Add(FString::Printf(TEXT("%s(%s)"), *SubObject->GetName(), *SubObject->GetClass()->GetName()));
+                            if (!Found && (SubObject->GetName() == ComponentName || SubObject->GetName().Contains(ComponentName)))
+                            {
+                                Found = SubObject;
+                            }
+                        }
+                    });
+                    if (Found) return Found;
+                }
+            }
+
+            // Build diagnostic info
+            OutDiagInfo = FString::Printf(TEXT("Component not found: %s. SCS(%d): [%s]. CDO class: %s. CDO subobjects(%d): [%s]."),
+                *ComponentName,
+                SCSNames.Num(), *FString::Join(SCSNames, TEXT(", ")),
+                *CDO->GetClass()->GetName(),
+                CDONames.Num(), *FString::Join(CDONames, TEXT(", ")));
+            if (Blueprint->ParentClass)
+            {
+                OutDiagInfo += FString::Printf(TEXT(" Parent(%s) subobjects(%d): [%s]"),
+                    *Blueprint->ParentClass->GetName(), ParentNames.Num(), *FString::Join(ParentNames, TEXT(", ")));
+            }
+        }
+        else
+        {
+            OutDiagInfo = FString::Printf(TEXT("Component not found: %s. CDO is NULL - blueprint may need compiling."), *ComponentName);
+        }
+    }
+    else
+    {
+        OutDiagInfo = FString::Printf(TEXT("Component not found: %s. GeneratedClass is NULL - compile the blueprint first."), *ComponentName);
+    }
+
+    return nullptr;
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPawnProperties(const TSharedPtr<FJsonObject>& Params)

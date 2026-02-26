@@ -32,6 +32,10 @@ public:
     static FVector GetVectorFromJson(const TSharedPtr<FJsonObject>& JsonObject, const FString& FieldName);
     static FRotator GetRotatorFromJson(const TSharedPtr<FJsonObject>& JsonObject, const FString& FieldName);
     
+    // World utilities - PIE-aware
+    static UWorld* GetTargetWorld(bool bPreferPIE = true);
+    static AActor* FindActorByName(const FString& ActorName, bool bPreferPIE = true);
+
     // Actor utilities
     static TSharedPtr<FJsonValue> ActorToJson(AActor* Actor);
     static TSharedPtr<FJsonObject> ActorToJsonObject(AActor* Actor, bool bDetailed = false);

@@ -27,8 +27,14 @@ private:
     TSharedPtr<FJsonObject> HandleSetPawnProperties(const TSharedPtr<FJsonObject>& Params);
 
     // Helper functions
-    TSharedPtr<FJsonObject> AddComponentToBlueprint(const FString& BlueprintName, const FString& ComponentType, 
+    TSharedPtr<FJsonObject> AddComponentToBlueprint(const FString& BlueprintName, const FString& ComponentType,
                                                    const FString& ComponentName, const FString& MeshType,
                                                    const TArray<float>& Location, const TArray<float>& Rotation,
                                                    const TArray<float>& Scale, const TSharedPtr<FJsonObject>& ComponentProperties);
+
+    /**
+     * Find a component on a Blueprint - searches SCS nodes first, then CDO default subobjects.
+     * Returns nullptr if not found, and fills OutDiagInfo with diagnostic details.
+     */
+    static UObject* FindBlueprintComponent(UBlueprint* Blueprint, const FString& ComponentName, FString& OutDiagInfo);
 }; 

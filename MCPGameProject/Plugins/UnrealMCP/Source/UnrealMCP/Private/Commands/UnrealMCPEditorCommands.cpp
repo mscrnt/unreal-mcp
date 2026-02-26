@@ -8,6 +8,7 @@
 #include "Engine/GameViewportClient.h"
 #include "Misc/FileHelper.h"
 #include "GameFramework/Actor.h"
+#include "EngineUtils.h"
 #include "Engine/Selection.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/StaticMeshActor.h"
@@ -15,11 +16,15 @@
 #include "Engine/PointLight.h"
 #include "Engine/SpotLight.h"
 #include "Camera/CameraActor.h"
+#include "GameFramework/PlayerStart.h"
 #include "Components/StaticMeshComponent.h"
 #include "EditorSubsystem.h"
 #include "Subsystems/EditorActorSubsystem.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
@@ -74,27 +79,70 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     {
         return HandleTakeScreenshot(Params);
     }
-    
+    // Phase 5: Editor Enhancements
+    else if (CommandType == TEXT("select_actors"))
+    {
+        return HandleSelectActors(Params);
+    }
+    else if (CommandType == TEXT("get_selected_actors"))
+    {
+        return HandleGetSelectedActors(Params);
+    }
+    else if (CommandType == TEXT("duplicate_actor"))
+    {
+        return HandleDuplicateActor(Params);
+    }
+    else if (CommandType == TEXT("set_viewport_camera"))
+    {
+        return HandleSetViewportCamera(Params);
+    }
+    else if (CommandType == TEXT("get_viewport_camera"))
+    {
+        return HandleGetViewportCamera(Params);
+    }
+    else if (CommandType == TEXT("set_actor_mobility"))
+    {
+        return HandleSetActorMobility(Params);
+    }
+    else if (CommandType == TEXT("set_actor_material"))
+    {
+        return HandleSetActorMaterial(Params);
+    }
+    else if (CommandType == TEXT("add_movement_input"))
+    {
+        return HandleAddMovementInput(Params);
+    }
+    else if (CommandType == TEXT("pawn_action"))
+    {
+        return HandlePawnAction(Params);
+    }
+
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorsInLevel(const TSharedPtr<FJsonObject>& Params)
 {
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    
-    TArray<TSharedPtr<FJsonValue>> ActorArray;
-    for (AActor* Actor : AllActors)
+    UWorld* World = FUnrealMCPCommonUtils::GetTargetWorld();
+    if (!World)
     {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No world available"));
+    }
+
+    TArray<TSharedPtr<FJsonValue>> ActorArray;
+    for (TActorIterator<AActor> It(World); It; ++It)
+    {
+        AActor* Actor = *It;
         if (Actor)
         {
             ActorArray.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
         }
     }
-    
+
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetArrayField(TEXT("actors"), ActorArray);
-    
+    ResultObj->SetStringField(TEXT("world"), World->GetMapName());
+    ResultObj->SetBoolField(TEXT("is_pie"), World->WorldType == EWorldType::PIE);
+
     return ResultObj;
 }
 
@@ -105,22 +153,38 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFindActorsByName(const T
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pattern' parameter"));
     }
-    
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    
-    TArray<TSharedPtr<FJsonValue>> MatchingActors;
-    for (AActor* Actor : AllActors)
+
+    UWorld* World = FUnrealMCPCommonUtils::GetTargetWorld();
+    if (!World)
     {
-        if (Actor && Actor->GetName().Contains(Pattern))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No world available"));
+    }
+
+    // Count total actors for diagnostics
+    int32 TotalActors = 0;
+    TArray<TSharedPtr<FJsonValue>> MatchingActors;
+    for (TActorIterator<AActor> It(World); It; ++It)
+    {
+        AActor* Actor = *It;
+        if (Actor)
         {
-            MatchingActors.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
+            TotalActors++;
+            if (Actor->GetName().Contains(Pattern) || Actor->GetActorLabel().Contains(Pattern))
+            {
+                MatchingActors.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
+            }
         }
     }
-    
+
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetArrayField(TEXT("actors"), MatchingActors);
-    
+    ResultObj->SetNumberField(TEXT("count"), MatchingActors.Num());
+    ResultObj->SetNumberField(TEXT("total_actors_in_world"), TotalActors);
+    ResultObj->SetStringField(TEXT("world"), World->GetMapName());
+    ResultObj->SetNumberField(TEXT("world_type_id"), (int32)World->WorldType);
+    ResultObj->SetBoolField(TEXT("is_pie"), World->WorldType == EWorldType::PIE);
+    ResultObj->SetStringField(TEXT("pattern"), Pattern);
+
     return ResultObj;
 }
 
@@ -201,9 +265,39 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnActor(const TShared
     {
         NewActor = World->SpawnActor<ACameraActor>(ACameraActor::StaticClass(), Location, Rotation, SpawnParams);
     }
+    else if (ActorType == TEXT("PlayerStart"))
+    {
+        NewActor = World->SpawnActor<APlayerStart>(APlayerStart::StaticClass(), Location, Rotation, SpawnParams);
+    }
     else
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown actor type: %s"), *ActorType));
+        // Generic fallback: try to find the class by name
+        UClass* ActorClass = nullptr;
+
+        // Try exact name
+        ActorClass = FindFirstObject<UClass>(*ActorType);
+
+        // Try with A prefix (UE actor naming convention)
+        if (!ActorClass && !ActorType.StartsWith(TEXT("A")))
+        {
+            ActorClass = FindFirstObject<UClass>(*(TEXT("A") + ActorType));
+        }
+
+        // Verify it's an Actor subclass
+        if (ActorClass && ActorClass->IsChildOf(AActor::StaticClass()))
+        {
+            NewActor = World->SpawnActor(ActorClass, &Location, &Rotation, SpawnParams);
+        }
+        else
+        {
+            FString DiagInfo = FString::Printf(TEXT("Unknown actor type: %s. Built-in types: StaticMeshActor, PointLight, SpotLight, DirectionalLight, CameraActor, PlayerStart. "
+                "Also accepts any AActor subclass name (e.g. 'TriggerBox', 'TargetPoint')."), *ActorType);
+            if (ActorClass)
+            {
+                DiagInfo += FString::Printf(TEXT(" Found class '%s' but it is not an Actor subclass."), *ActorClass->GetName());
+            }
+            return FUnrealMCPCommonUtils::CreateErrorResponse(DiagInfo);
+        }
     }
 
     if (NewActor)
@@ -228,51 +322,29 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteActor(const TShare
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
     }
 
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    
-    for (AActor* Actor : AllActors)
+    AActor* Actor = FUnrealMCPCommonUtils::FindActorByName(ActorName);
+    if (!Actor)
     {
-        if (Actor && Actor->GetName() == ActorName)
-        {
-            // Store actor info before deletion for the response
-            TSharedPtr<FJsonObject> ActorInfo = FUnrealMCPCommonUtils::ActorToJsonObject(Actor);
-            
-            // Delete the actor
-            Actor->Destroy();
-            
-            TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
-            ResultObj->SetObjectField(TEXT("deleted_actor"), ActorInfo);
-            return ResultObj;
-        }
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
     }
-    
-    return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+
+    TSharedPtr<FJsonObject> ActorInfo = FUnrealMCPCommonUtils::ActorToJsonObject(Actor);
+    Actor->Destroy();
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetObjectField(TEXT("deleted_actor"), ActorInfo);
+    return ResultObj;
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorTransform(const TSharedPtr<FJsonObject>& Params)
 {
-    // Get actor name
     FString ActorName;
     if (!Params->TryGetStringField(TEXT("name"), ActorName))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
     }
 
-    // Find the actor
-    AActor* TargetActor = nullptr;
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    
-    for (AActor* Actor : AllActors)
-    {
-        if (Actor && Actor->GetName() == ActorName)
-        {
-            TargetActor = Actor;
-            break;
-        }
-    }
-
+    AActor* TargetActor = FUnrealMCPCommonUtils::FindActorByName(ActorName);
     if (!TargetActor)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
@@ -303,59 +375,30 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorTransform(const 
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorProperties(const TSharedPtr<FJsonObject>& Params)
 {
-    // Get actor name
     FString ActorName;
     if (!Params->TryGetStringField(TEXT("name"), ActorName))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
     }
 
-    // Find the actor
-    AActor* TargetActor = nullptr;
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    
-    for (AActor* Actor : AllActors)
-    {
-        if (Actor && Actor->GetName() == ActorName)
-        {
-            TargetActor = Actor;
-            break;
-        }
-    }
-
+    AActor* TargetActor = FUnrealMCPCommonUtils::FindActorByName(ActorName);
     if (!TargetActor)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
     }
 
-    // Always return detailed properties for this command
     return FUnrealMCPCommonUtils::ActorToJsonObject(TargetActor, true);
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorProperty(const TSharedPtr<FJsonObject>& Params)
 {
-    // Get actor name
     FString ActorName;
     if (!Params->TryGetStringField(TEXT("name"), ActorName))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
     }
 
-    // Find the actor
-    AActor* TargetActor = nullptr;
-    TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-    
-    for (AActor* Actor : AllActors)
-    {
-        if (Actor && Actor->GetName() == ActorName)
-        {
-            TargetActor = Actor;
-            break;
-        }
-    }
-
+    AActor* TargetActor = FUnrealMCPCommonUtils::FindActorByName(ActorName);
     if (!TargetActor)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
@@ -514,20 +557,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFocusViewport(const TSha
     // If we have a target actor, focus on it
     if (HasTargetActor)
     {
-        // Find the actor
-        AActor* TargetActor = nullptr;
-        TArray<AActor*> AllActors;
-        UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-        
-        for (AActor* Actor : AllActors)
-        {
-            if (Actor && Actor->GetName() == TargetActorName)
-            {
-                TargetActor = Actor;
-                break;
-            }
-        }
-
+        AActor* TargetActor = FUnrealMCPCommonUtils::FindActorByName(TargetActorName, /*bPreferPIE=*/ false);
         if (!TargetActor)
         {
             return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *TargetActorName));
@@ -584,8 +614,8 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleTakeScreenshot(const TSh
         
         if (Viewport->ReadPixels(Bitmap, FReadSurfaceDataFlags(), ViewportRect))
         {
-            TArray<uint8> CompressedBitmap;
-            FImageUtils::CompressImageArray(Viewport->GetSizeXY().X, Viewport->GetSizeXY().Y, Bitmap, CompressedBitmap);
+            TArray64<uint8> CompressedBitmap;
+            FImageUtils::PNGCompressImageArray(Viewport->GetSizeXY().X, Viewport->GetSizeXY().Y, Bitmap, CompressedBitmap);
             
             if (FFileHelper::SaveArrayToFile(CompressedBitmap, *FilePath))
             {
@@ -597,4 +627,470 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleTakeScreenshot(const TSh
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to take screenshot"));
-} 
+}
+
+// ============================================================
+// Phase 5: Editor Enhancements
+// ============================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSelectActors(const TSharedPtr<FJsonObject>& Params)
+{
+	const TArray<TSharedPtr<FJsonValue>>* NamesArray;
+	if (!Params->TryGetArrayField(TEXT("names"), NamesArray))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'names' parameter"));
+	}
+
+	UEditorActorSubsystem* EditorActorSubsystem = GEditor->GetEditorSubsystem<UEditorActorSubsystem>();
+	if (!EditorActorSubsystem)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get EditorActorSubsystem"));
+	}
+
+	// Clear current selection
+	GEditor->SelectNone(true, true);
+
+	int32 SelectedCount = 0;
+	for (const TSharedPtr<FJsonValue>& NameVal : *NamesArray)
+	{
+		FString ActorName = NameVal->AsString();
+		AActor* Actor = FUnrealMCPCommonUtils::FindActorByName(ActorName, /*bPreferPIE=*/ false);
+		if (Actor)
+		{
+			GEditor->SelectActor(Actor, true, true);
+			SelectedCount++;
+		}
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetNumberField(TEXT("selected_count"), SelectedCount);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetSelectedActors(const TSharedPtr<FJsonObject>& Params)
+{
+	USelection* Selection = GEditor->GetSelectedActors();
+	if (!Selection)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor selection"));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ActorArray;
+	for (int32 i = 0; i < Selection->Num(); i++)
+	{
+		AActor* Actor = Cast<AActor>(Selection->GetSelectedObject(i));
+		if (Actor)
+		{
+			ActorArray.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
+		}
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetArrayField(TEXT("actors"), ActorArray);
+	ResultObj->SetNumberField(TEXT("count"), ActorArray.Num());
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDuplicateActor(const TSharedPtr<FJsonObject>& Params)
+{
+	FString ActorName;
+	if (!Params->TryGetStringField(TEXT("name"), ActorName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+	}
+
+	FString NewName;
+	Params->TryGetStringField(TEXT("new_name"), NewName);
+
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	if (!World) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor world"));
+
+	// Find source actor (editor world only - can't duplicate PIE actors)
+	AActor* SourceActor = FUnrealMCPCommonUtils::FindActorByName(ActorName, /*bPreferPIE=*/ false);
+	if (!SourceActor) return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+
+	// Use EditorActorSubsystem to duplicate
+	UEditorActorSubsystem* EditorActorSubsystem = GEditor->GetEditorSubsystem<UEditorActorSubsystem>();
+	if (!EditorActorSubsystem) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get EditorActorSubsystem"));
+
+	AActor* DuplicatedActor = EditorActorSubsystem->DuplicateActor(SourceActor, World);
+	if (!DuplicatedActor) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to duplicate actor"));
+
+	// Set location if provided
+	if (Params->HasField(TEXT("location")))
+	{
+		FVector Location = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("location"));
+		DuplicatedActor->SetActorLocation(Location);
+	}
+
+	// Rename if requested
+	if (!NewName.IsEmpty())
+	{
+		DuplicatedActor->Rename(*NewName);
+		DuplicatedActor->SetActorLabel(NewName);
+	}
+
+	return FUnrealMCPCommonUtils::ActorToJsonObject(DuplicatedActor, true);
+}
+
+// Helper: safely get the first level editor viewport client
+static FLevelEditorViewportClient* GetLevelEditorViewportClient()
+{
+	// Try active viewport first
+	FViewport* ActiveViewport = GEditor->GetActiveViewport();
+	if (ActiveViewport)
+	{
+		FLevelEditorViewportClient* Client = static_cast<FLevelEditorViewportClient*>(ActiveViewport->GetClient());
+		if (Client) return Client;
+	}
+
+	// Fallback: iterate all level viewports and use the first perspective one
+	for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
+	{
+		if (LevelVC)
+		{
+			return LevelVC;
+		}
+	}
+
+	return nullptr;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetViewportCamera(const TSharedPtr<FJsonObject>& Params)
+{
+	FLevelEditorViewportClient* ViewportClient = GetLevelEditorViewportClient();
+	if (!ViewportClient)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No level editor viewport available"));
+	}
+
+	if (Params->HasField(TEXT("location")))
+	{
+		FVector Location = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("location"));
+		ViewportClient->SetViewLocation(Location);
+	}
+
+	if (Params->HasField(TEXT("rotation")))
+	{
+		FRotator Rotation = FUnrealMCPCommonUtils::GetRotatorFromJson(Params, TEXT("rotation"));
+		ViewportClient->SetViewRotation(Rotation);
+	}
+
+	ViewportClient->Invalidate();
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	FVector Loc = ViewportClient->GetViewLocation();
+	FRotator Rot = ViewportClient->GetViewRotation();
+	TArray<TSharedPtr<FJsonValue>> LocArr;
+	LocArr.Add(MakeShared<FJsonValueNumber>(Loc.X));
+	LocArr.Add(MakeShared<FJsonValueNumber>(Loc.Y));
+	LocArr.Add(MakeShared<FJsonValueNumber>(Loc.Z));
+	TArray<TSharedPtr<FJsonValue>> RotArr;
+	RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Pitch));
+	RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Yaw));
+	RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Roll));
+	ResultObj->SetArrayField(TEXT("location"), LocArr);
+	ResultObj->SetArrayField(TEXT("rotation"), RotArr);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetViewportCamera(const TSharedPtr<FJsonObject>& Params)
+{
+	FLevelEditorViewportClient* ViewportClient = GetLevelEditorViewportClient();
+	if (!ViewportClient)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No level editor viewport available"));
+	}
+
+	FVector Loc = ViewportClient->GetViewLocation();
+	FRotator Rot = ViewportClient->GetViewRotation();
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> LocArr;
+	LocArr.Add(MakeShared<FJsonValueNumber>(Loc.X));
+	LocArr.Add(MakeShared<FJsonValueNumber>(Loc.Y));
+	LocArr.Add(MakeShared<FJsonValueNumber>(Loc.Z));
+	TArray<TSharedPtr<FJsonValue>> RotArr;
+	RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Pitch));
+	RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Yaw));
+	RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Roll));
+	ResultObj->SetArrayField(TEXT("location"), LocArr);
+	ResultObj->SetArrayField(TEXT("rotation"), RotArr);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorMobility(const TSharedPtr<FJsonObject>& Params)
+{
+	FString ActorName;
+	if (!Params->TryGetStringField(TEXT("name"), ActorName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+	}
+
+	FString MobilityStr;
+	if (!Params->TryGetStringField(TEXT("mobility"), MobilityStr))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'mobility' parameter"));
+	}
+
+	EComponentMobility::Type Mobility;
+	if (MobilityStr == TEXT("Static")) Mobility = EComponentMobility::Static;
+	else if (MobilityStr == TEXT("Stationary")) Mobility = EComponentMobility::Stationary;
+	else if (MobilityStr == TEXT("Movable")) Mobility = EComponentMobility::Movable;
+	else return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Invalid mobility: %s (use Static/Stationary/Movable)"), *MobilityStr));
+
+	AActor* Actor = FUnrealMCPCommonUtils::FindActorByName(ActorName);
+	if (!Actor)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+	}
+
+	USceneComponent* RootComp = Actor->GetRootComponent();
+	if (!RootComp)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Actor has no root component"));
+	}
+
+	RootComp->SetMobility(Mobility);
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("actor"), ActorName);
+	ResultObj->SetStringField(TEXT("mobility"), MobilityStr);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorMaterial(const TSharedPtr<FJsonObject>& Params)
+{
+	FString ActorName;
+	if (!Params->TryGetStringField(TEXT("name"), ActorName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+	}
+
+	FString MaterialPath;
+	if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path' parameter"));
+	}
+
+	int32 SlotIndex = 0;
+	Params->TryGetNumberField(TEXT("slot"), SlotIndex);
+
+	// Load material
+	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+	if (!Material)
+	{
+		FString AssetPath = MaterialPath + TEXT(".") + FPaths::GetBaseFilename(MaterialPath);
+		Material = LoadObject<UMaterialInterface>(nullptr, *AssetPath);
+	}
+	if (!Material) return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
+
+	AActor* Actor = FUnrealMCPCommonUtils::FindActorByName(ActorName);
+	if (!Actor)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+	}
+
+	UStaticMeshComponent* MeshComp = Actor->FindComponentByClass<UStaticMeshComponent>();
+	if (!MeshComp)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Actor has no StaticMeshComponent"));
+	}
+
+	MeshComp->SetMaterial(SlotIndex, Material);
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("actor"), ActorName);
+	ResultObj->SetStringField(TEXT("material"), MaterialPath);
+	ResultObj->SetNumberField(TEXT("slot"), SlotIndex);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ============================================================
+// PIE / RL Tools
+// ============================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleAddMovementInput(const TSharedPtr<FJsonObject>& Params)
+{
+	FString ActorName;
+	if (!Params->TryGetStringField(TEXT("actor_name"), ActorName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_name' parameter"));
+	}
+
+	AActor* Actor = FUnrealMCPCommonUtils::FindActorByName(ActorName);
+	if (!Actor)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+	}
+
+	APawn* Pawn = Cast<APawn>(Actor);
+	if (!Pawn)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor '%s' is not a Pawn (class: %s)"), *ActorName, *Actor->GetClass()->GetName()));
+	}
+
+	// Get direction vector
+	FVector Direction(0.f, 0.f, 0.f);
+	if (Params->HasField(TEXT("direction")))
+	{
+		Direction = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("direction"));
+	}
+	else
+	{
+		// Accept individual axis floats for convenience
+		double X = 0, Y = 0, Z = 0;
+		Params->TryGetNumberField(TEXT("x"), X);
+		Params->TryGetNumberField(TEXT("y"), Y);
+		Params->TryGetNumberField(TEXT("z"), Z);
+		Direction = FVector(X, Y, Z);
+	}
+
+	double Scale = 1.0;
+	Params->TryGetNumberField(TEXT("scale"), Scale);
+
+	Pawn->AddMovementInput(Direction, Scale);
+
+	// Return current state after input
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("actor"), ActorName);
+
+	FVector Loc = Pawn->GetActorLocation();
+	TArray<TSharedPtr<FJsonValue>> LocArr;
+	LocArr.Add(MakeShared<FJsonValueNumber>(Loc.X));
+	LocArr.Add(MakeShared<FJsonValueNumber>(Loc.Y));
+	LocArr.Add(MakeShared<FJsonValueNumber>(Loc.Z));
+	ResultObj->SetArrayField(TEXT("location"), LocArr);
+
+	FVector Vel(0, 0, 0);
+	ACharacter* Character = Cast<ACharacter>(Pawn);
+	if (Character && Character->GetCharacterMovement())
+	{
+		Vel = Character->GetCharacterMovement()->Velocity;
+	}
+	TArray<TSharedPtr<FJsonValue>> VelArr;
+	VelArr.Add(MakeShared<FJsonValueNumber>(Vel.X));
+	VelArr.Add(MakeShared<FJsonValueNumber>(Vel.Y));
+	VelArr.Add(MakeShared<FJsonValueNumber>(Vel.Z));
+	ResultObj->SetArrayField(TEXT("velocity"), VelArr);
+
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandlePawnAction(const TSharedPtr<FJsonObject>& Params)
+{
+	FString ActorName;
+	if (!Params->TryGetStringField(TEXT("actor_name"), ActorName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_name' parameter"));
+	}
+
+	FString Action;
+	if (!Params->TryGetStringField(TEXT("action"), Action))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'action' parameter"));
+	}
+
+	AActor* Actor = FUnrealMCPCommonUtils::FindActorByName(ActorName);
+	if (!Actor)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+	}
+
+	APawn* Pawn = Cast<APawn>(Actor);
+	if (!Pawn)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor '%s' is not a Pawn"), *ActorName));
+	}
+
+	ACharacter* Character = Cast<ACharacter>(Pawn);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("actor"), ActorName);
+	ResultObj->SetStringField(TEXT("action"), Action);
+
+	if (Action == TEXT("jump") || Action == TEXT("Jump"))
+	{
+		if (!Character)
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Actor is not a Character — cannot jump"));
+		}
+		Character->Jump();
+		ResultObj->SetBoolField(TEXT("is_jumping"), true);
+	}
+	else if (Action == TEXT("stop_jumping") || Action == TEXT("StopJumping"))
+	{
+		if (!Character)
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Actor is not a Character — cannot stop jumping"));
+		}
+		Character->StopJumping();
+	}
+	else if (Action == TEXT("crouch") || Action == TEXT("Crouch"))
+	{
+		if (!Character)
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Actor is not a Character — cannot crouch"));
+		}
+		Character->Crouch();
+		ResultObj->SetBoolField(TEXT("is_crouched"), Character->bIsCrouched);
+	}
+	else if (Action == TEXT("uncrouch") || Action == TEXT("UnCrouch"))
+	{
+		if (!Character)
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Actor is not a Character — cannot uncrouch"));
+		}
+		Character->UnCrouch();
+	}
+	else if (Action == TEXT("launch"))
+	{
+		// Launch with a velocity vector — useful for applying impulses
+		FVector LaunchVelocity(0, 0, 0);
+		if (Params->HasField(TEXT("velocity")))
+		{
+			LaunchVelocity = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("velocity"));
+		}
+		bool bXYOverride = false, bZOverride = false;
+		Params->TryGetBoolField(TEXT("xy_override"), bXYOverride);
+		Params->TryGetBoolField(TEXT("z_override"), bZOverride);
+
+		if (Character)
+		{
+			Character->LaunchCharacter(LaunchVelocity, bXYOverride, bZOverride);
+		}
+		else
+		{
+			// For non-Character pawns, just set velocity on the movement component
+			UPawnMovementComponent* MoveComp = Pawn->GetMovementComponent();
+			if (MoveComp)
+			{
+				MoveComp->Velocity = LaunchVelocity;
+			}
+		}
+	}
+	else
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Unknown action: %s. Supported: jump, stop_jumping, crouch, uncrouch, launch"), *Action));
+	}
+
+	// Return current state
+	FVector Loc = Pawn->GetActorLocation();
+	TArray<TSharedPtr<FJsonValue>> LocArr;
+	LocArr.Add(MakeShared<FJsonValueNumber>(Loc.X));
+	LocArr.Add(MakeShared<FJsonValueNumber>(Loc.Y));
+	LocArr.Add(MakeShared<FJsonValueNumber>(Loc.Z));
+	ResultObj->SetArrayField(TEXT("location"), LocArr);
+
+	if (Character && Character->GetCharacterMovement())
+	{
+		FVector Vel = Character->GetCharacterMovement()->Velocity;
+		TArray<TSharedPtr<FJsonValue>> VelArr;
+		VelArr.Add(MakeShared<FJsonValueNumber>(Vel.X));
+		VelArr.Add(MakeShared<FJsonValueNumber>(Vel.Y));
+		VelArr.Add(MakeShared<FJsonValueNumber>(Vel.Z));
+		ResultObj->SetArrayField(TEXT("velocity"), VelArr);
+		ResultObj->SetBoolField(TEXT("is_falling"), Character->GetCharacterMovement()->IsFalling());
+	}
+
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
