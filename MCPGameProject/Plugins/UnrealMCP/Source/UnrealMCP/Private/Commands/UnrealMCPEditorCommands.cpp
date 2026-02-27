@@ -21,6 +21,10 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "EditorSubsystem.h"
 #include "Subsystems/EditorActorSubsystem.h"
+#include "LevelEditor.h"
+#include "SLevelViewport.h"
+#include "RenderingThread.h"
+#include "UnrealClient.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -659,41 +663,112 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFocusViewport(const TSha
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleTakeScreenshot(const TSharedPtr<FJsonObject>& Params)
 {
-    // Get file path parameter
+    // Get file path parameter (optional - defaults to temp directory)
     FString FilePath;
-    if (!Params->TryGetStringField(TEXT("filepath"), FilePath))
+    if (!Params->TryGetStringField(TEXT("filepath"), FilePath) || FilePath.IsEmpty())
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'filepath' parameter"));
+        FilePath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Screenshots"), TEXT("MCP_Screenshot.png"));
     }
-    
+
     // Ensure the file path has a proper extension
     if (!FilePath.EndsWith(TEXT(".png")))
     {
         FilePath += TEXT(".png");
     }
 
-    // Get the active viewport
-    if (GEditor && GEditor->GetActiveViewport())
+    // Ensure directory exists
+    FString Directory = FPaths::GetPath(FilePath);
+    if (!Directory.IsEmpty())
     {
-        FViewport* Viewport = GEditor->GetActiveViewport();
-        TArray<FColor> Bitmap;
-        FIntRect ViewportRect(0, 0, Viewport->GetSizeXY().X, Viewport->GetSizeXY().Y);
-        
-        if (Viewport->ReadPixels(Bitmap, FReadSurfaceDataFlags(), ViewportRect))
+        IFileManager::Get().MakeDirectory(*Directory, true);
+    }
+
+    bool bIsPIE = GEditor && GEditor->IsPlayingSessionInEditor();
+    FString ViewportSource = TEXT("unknown");
+    FViewport* Viewport = nullptr;
+
+    // During PIE, capture the game viewport
+    if (bIsPIE)
+    {
+        if (GEngine && GEngine->GameViewport && GEngine->GameViewport->Viewport)
         {
-            TArray64<uint8> CompressedBitmap;
-            FImageUtils::PNGCompressImageArray(Viewport->GetSizeXY().X, Viewport->GetSizeXY().Y, Bitmap, CompressedBitmap);
-            
-            if (FFileHelper::SaveArrayToFile(CompressedBitmap, *FilePath))
-            {
-                TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
-                ResultObj->SetStringField(TEXT("filepath"), FilePath);
-                return ResultObj;
-            }
+            Viewport = GEngine->GameViewport->Viewport;
+            ViewportSource = TEXT("PIE_GameViewport");
         }
     }
-    
-    return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to take screenshot"));
+
+    // For editor mode, get the active level editor viewport (the 3D perspective view)
+    if (!Viewport)
+    {
+        FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
+        TSharedPtr<SLevelViewport> ActiveLevelViewport = LevelEditorModule.GetFirstActiveLevelViewport();
+        if (ActiveLevelViewport.IsValid())
+        {
+            FLevelEditorViewportClient& ViewportClient = ActiveLevelViewport->GetLevelViewportClient();
+            Viewport = ViewportClient.Viewport;
+            ViewportSource = TEXT("LevelEditor_ActiveViewport");
+        }
+    }
+
+    // Last resort fallback
+    if (!Viewport && GEditor && GEditor->GetActiveViewport())
+    {
+        Viewport = GEditor->GetActiveViewport();
+        ViewportSource = TEXT("Editor_ActiveViewport");
+    }
+
+    if (!Viewport)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No viewport available for screenshot"));
+    }
+
+    int32 Width = Viewport->GetSizeXY().X;
+    int32 Height = Viewport->GetSizeXY().Y;
+
+    if (Width <= 0 || Height <= 0)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Viewport has invalid size: %dx%d (source: %s)"), Width, Height, *ViewportSource));
+    }
+
+    FlushRenderingCommands();
+
+    TArray<FColor> Bitmap;
+    FIntRect ViewportRect(0, 0, Width, Height);
+    FReadSurfaceDataFlags ReadFlags(RCM_UNorm);
+    ReadFlags.SetLinearToGamma(false);
+
+    if (!Viewport->ReadPixels(Bitmap, ReadFlags, ViewportRect))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("ReadPixels failed for viewport %dx%d (source: %s)"), Width, Height, *ViewportSource));
+    }
+
+    // Force alpha to 255 - viewport ReadPixels returns A=0 which makes
+    // the PNG fully transparent (appears white). UE's own screenshot code
+    // (UGameViewportClient::ProcessScreenShots) does the same fix.
+    for (FColor& Pixel : Bitmap)
+    {
+        Pixel.A = 255;
+    }
+
+    TArray64<uint8> CompressedBitmap;
+    FImageUtils::PNGCompressImageArray(Width, Height, Bitmap, CompressedBitmap);
+
+    if (FFileHelper::SaveArrayToFile(CompressedBitmap, *FilePath))
+    {
+        TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+        ResultObj->SetStringField(TEXT("filepath"), FilePath);
+        ResultObj->SetNumberField(TEXT("width"), Width);
+        ResultObj->SetNumberField(TEXT("height"), Height);
+        ResultObj->SetBoolField(TEXT("is_pie"), bIsPIE);
+        ResultObj->SetStringField(TEXT("viewport_source"), ViewportSource);
+        return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+    }
+    else
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to save screenshot to: %s"), *FilePath));
+    }
 }
 
 // ============================================================

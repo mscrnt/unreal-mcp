@@ -12,7 +12,7 @@
 
 This project enables AI assistant clients like Cursor, Windsurf, Claude Desktop, and Claude Code to control Unreal Engine through natural language using the Model Context Protocol (MCP).
 
-> **Fork note:** This is a fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with significant expansions — from ~35 tools to **94 tools** — covering materials, assets, levels, animation blueprints, PIE testing, RL agent support, and more.
+> **Fork note:** This is a fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with significant expansions — from ~35 tools to **96 tools** — covering materials, assets, levels, animation blueprints, PIE testing, RL agent support, visual feedback via screenshots, and more.
 
 ## Warning: Experimental Status
 
@@ -25,11 +25,11 @@ This project is currently in an **EXPERIMENTAL** state. The API, functionality, 
 
 ## Overview
 
-The Unreal MCP integration provides **94 tools** across 9 categories for controlling Unreal Engine through natural language:
+The Unreal MCP integration provides **96 tools** across 9 categories for controlling Unreal Engine through natural language:
 
 | Category | Tools | Capabilities |
 |----------|:-----:|-------------|
-| **Editor** | 19 | Actor CRUD, transforms, properties, selection, duplication, viewport camera, material assignment (StaticMesh + SkeletalMesh), actor tags, PIE movement input, pawn actions (jump/crouch/launch) |
+| **Editor** | 21 | Actor CRUD, transforms, properties, selection, duplication, viewport camera, material assignment (StaticMesh + SkeletalMesh), actor tags, PIE movement input, pawn actions (jump/crouch/launch), viewport screenshots with grid sequences |
 | **Blueprints** | 7 | Create Blueprint classes, add/configure components, set properties, physics, compile with error reporting |
 | **Blueprint Nodes** | 20 | Events, functions, branches, loops, delays, timers, custom events, math ops, variables (get/set/add/remove/change type), pin defaults, self/component references, node connections |
 | **Level** | 11 | Create/load/save levels, Play-In-Editor (start/stop/query), console commands, build lighting, world settings |
@@ -188,7 +188,7 @@ Add the following to your MCP configuration:
 
 ## Tool Reference
 
-### Editor Tools (19)
+### Editor Tools (21)
 
 | Tool | Description |
 |------|-------------|
@@ -211,6 +211,8 @@ Add the following to your MCP configuration:
 | `get_actor_tags` | Get all tags on an actor |
 | `add_movement_input` | Inject movement into a Pawn during PIE (RL training) |
 | `pawn_action` | Execute pawn actions during PIE (jump, crouch, launch) |
+| `take_screenshot` | Capture the viewport (game view during PIE, editor otherwise) and return as an image |
+| `take_screenshot_sequence` | Capture N screenshots over time and return as a single grid image |
 
 ### Blueprint Tools (7)
 
@@ -343,6 +345,17 @@ Typical RL loop:
 2. **Apply action**: `add_movement_input` (move) + `pawn_action("jump")` (jump)
 3. **Check done**: position checks via properties
 4. **Reset**: `set_actor_transform` to teleport back to start
+
+## Visual Feedback (Screenshots)
+
+The AI agent can see what's happening in the editor or during gameplay:
+
+- **`take_screenshot`** — captures the current viewport and returns it as an MCP image that the AI can see directly. During PIE, it captures the game camera view instead of the editor viewport.
+- **`take_screenshot_sequence(count=12, interval=0.5, columns=4)`** — captures multiple screenshots over time and composites them into a grid. Default: 12 frames at 0.5s intervals = 6 seconds of gameplay in a single 4x3 image.
+
+This enables the AI to visually verify level design, debug gameplay, observe RL agent behavior, and confirm that materials/lighting look correct — all without the user having to describe what they see.
+
+> **Note**: `take_screenshot_sequence` requires [Pillow](https://pillow.readthedocs.io/) (included in dependencies) for grid compositing.
 
 ## Property Type Support
 

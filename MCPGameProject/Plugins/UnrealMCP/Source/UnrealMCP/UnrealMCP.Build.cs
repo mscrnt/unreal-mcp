@@ -34,7 +34,8 @@ public class UnrealMCP : ModuleRules
 				"HTTP",
 				"Json",
 				"JsonUtilities",
-				"DeveloperSettings"
+				"DeveloperSettings",
+			"RenderCore"
 			}
 		);
 		

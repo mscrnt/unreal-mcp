@@ -5,8 +5,12 @@ This module provides tools for controlling the Unreal Editor viewport and other 
 """
 
 import logging
-from typing import Dict, List, Any, Optional
+import time
+import os
+import tempfile
+from typing import Dict, List, Any, Optional, Union
 from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.fastmcp.utilities.types import Image
 
 # Get logger
 logger = logging.getLogger("UnrealMCP")
@@ -662,5 +666,162 @@ def register_editor_tools(mcp: FastMCP):
             return response or {}
         except Exception as e:
             return {"success": False, "message": str(e)}
+
+    # ============================================================
+    # Screenshot Tools
+    # ============================================================
+
+    @mcp.tool()
+    def take_screenshot(
+        ctx: Context,
+        filepath: str = ""
+    ) -> Image:
+        """
+        Take a screenshot of the current viewport (editor or PIE game view).
+        Returns the image directly so the AI can see what's happening.
+
+        Args:
+            filepath: Optional file path to save the PNG. If empty, uses a temp file.
+        """
+        from PIL import Image as PILImage
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                raise RuntimeError("Failed to connect to Unreal Engine")
+
+            # Use a temp file if no path specified
+            if not filepath:
+                temp_dir = tempfile.gettempdir()
+                filepath = os.path.join(temp_dir, "unreal_mcp_screenshot.png")
+
+            response = unreal.send_command("take_screenshot", {
+                "filepath": filepath
+            })
+            data = response.get("result", response)
+
+            if response.get("status") == "error":
+                raise RuntimeError(response.get("error", "Screenshot failed"))
+
+            saved_path = data.get("filepath", filepath)
+
+            # Fix alpha channel: UE viewport ReadPixels returns A=0 (fully
+            # transparent) which makes the PNG appear white. Force alpha to 255.
+            img = PILImage.open(saved_path)
+            if img.mode == "RGBA":
+                r, g, b, a = img.split()
+                img = PILImage.merge("RGB", (r, g, b))
+                img.save(saved_path)
+
+            return Image(path=saved_path)
+        except Exception as e:
+            raise RuntimeError(f"Screenshot failed: {e}")
+
+    @mcp.tool()
+    def take_screenshot_sequence(
+        ctx: Context,
+        count: int = 12,
+        interval: float = 0.5,
+        columns: int = 4
+    ) -> Image:
+        """
+        Take a sequence of screenshots over time and return them as a single grid image.
+        Useful for seeing what happened over a period (e.g. 12 shots at 0.5s = 6 seconds).
+        Works during PIE to observe game behavior.
+
+        Args:
+            count: Number of screenshots to take (default 12)
+            interval: Seconds between each screenshot (default 0.5)
+            columns: Number of columns in the grid (default 4)
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            from PIL import Image as PILImage
+        except ImportError:
+            raise RuntimeError(
+                "Pillow is required for screenshot grids. "
+                "Add 'Pillow' to your Python dependencies."
+            )
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                raise RuntimeError("Failed to connect to Unreal Engine")
+
+            temp_dir = tempfile.gettempdir()
+            frame_paths = []
+
+            # Capture frames
+            for i in range(count):
+                frame_path = os.path.join(temp_dir, f"unreal_mcp_frame_{i:03d}.png")
+                response = unreal.send_command("take_screenshot", {
+                    "filepath": frame_path
+                })
+                data = response.get("result", response)
+                if response.get("status") == "error":
+                    logger.warning(f"Frame {i} failed: {response.get('error')}")
+                    continue
+                frame_paths.append(data.get("filepath", frame_path))
+
+                if i < count - 1:
+                    time.sleep(interval)
+
+            if not frame_paths:
+                raise RuntimeError("No frames captured")
+
+            # Load frames and fix alpha (UE returns A=0)
+            frames = []
+            for p in frame_paths:
+                try:
+                    img = PILImage.open(p)
+                    if img.mode == "RGBA":
+                        r, g, b, a = img.split()
+                        img = PILImage.merge("RGB", (r, g, b))
+                    frames.append(img)
+                except Exception:
+                    continue
+
+            if not frames:
+                raise RuntimeError("No frames could be loaded")
+
+            # Calculate grid dimensions
+            cols = min(columns, len(frames))
+            rows = (len(frames) + cols - 1) // cols
+            fw, fh = frames[0].size
+
+            # Downscale each frame so the grid isn't enormous
+            max_thumb_width = 480
+            if fw > max_thumb_width:
+                scale = max_thumb_width / fw
+                thumb_w = max_thumb_width
+                thumb_h = int(fh * scale)
+            else:
+                thumb_w, thumb_h = fw, fh
+
+            # Composite grid
+            grid = PILImage.new("RGB", (cols * thumb_w, rows * thumb_h), (0, 0, 0))
+            for idx, frame in enumerate(frames):
+                r, c = divmod(idx, cols)
+                thumb = frame.resize((thumb_w, thumb_h), PILImage.LANCZOS)
+                grid.paste(thumb, (c * thumb_w, r * thumb_h))
+
+            # Save grid
+            grid_path = os.path.join(temp_dir, "unreal_mcp_grid.png")
+            grid.save(grid_path)
+
+            # Clean up individual frames
+            for p in frame_paths:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+            return Image(path=grid_path)
+        except ImportError:
+            raise
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Screenshot sequence failed: {e}")
 
     logger.info("Editor tools registered successfully")
