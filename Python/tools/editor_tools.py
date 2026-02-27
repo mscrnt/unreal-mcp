@@ -707,11 +707,19 @@ def register_editor_tools(mcp: FastMCP):
 
             # Fix alpha channel: UE viewport ReadPixels returns A=0 (fully
             # transparent) which makes the PNG appear white. Force alpha to 255.
+            # Also cap resolution so the image fits within LLM token budgets.
+            MAX_WIDTH = 1024
             img = PILImage.open(saved_path)
             if img.mode == "RGBA":
                 r, g, b, a = img.split()
                 img = PILImage.merge("RGB", (r, g, b))
-                img.save(saved_path)
+            if img.width > MAX_WIDTH:
+                scale = MAX_WIDTH / img.width
+                img = img.resize(
+                    (MAX_WIDTH, int(img.height * scale)),
+                    PILImage.LANCZOS,
+                )
+            img.save(saved_path)
 
             return Image(path=saved_path)
         except Exception as e:
@@ -789,8 +797,9 @@ def register_editor_tools(mcp: FastMCP):
             rows = (len(frames) + cols - 1) // cols
             fw, fh = frames[0].size
 
-            # Downscale each frame so the grid isn't enormous
-            max_thumb_width = 480
+            # Downscale each frame so the grid fits within LLM token budgets
+            # 320px * 4 cols = 1280px wide grid, reasonable for AI vision
+            max_thumb_width = 320
             if fw > max_thumb_width:
                 scale = max_thumb_width / fw
                 thumb_w = max_thumb_width

@@ -68,7 +68,15 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString
     {
         return HandleSetPawnProperties(Params);
     }
-    
+    else if (CommandType == TEXT("reparent_blueprint_component"))
+    {
+        return HandleReparentBlueprintComponent(Params);
+    }
+    else if (CommandType == TEXT("remove_blueprint_component"))
+    {
+        return HandleRemoveBlueprintComponent(Params);
+    }
+
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
 }
 
@@ -1352,4 +1360,204 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPawnProperties(con
     ResponseObj->SetBoolField(TEXT("success"), bAnyPropertiesSet);
     ResponseObj->SetObjectField(TEXT("results"), ResultsObj);
     return ResponseObj;
-} 
+}
+
+// ============================================================
+// Reparent (attach) a component to a new parent within a Blueprint
+// ============================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReparentBlueprintComponent(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FString ComponentName;
+    if (!Params->TryGetStringField(TEXT("component_name"), ComponentName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'component_name' parameter"));
+    }
+
+    FString ParentName;
+    if (!Params->TryGetStringField(TEXT("parent_name"), ParentName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'parent_name' parameter"));
+    }
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    if (!Blueprint->SimpleConstructionScript)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint has no SimpleConstructionScript"));
+    }
+
+    // Find child and parent SCS nodes
+    USCS_Node* ChildNode = nullptr;
+    USCS_Node* ParentNode = nullptr;
+    USCS_Node* OldParentNode = nullptr;
+
+    for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+    {
+        FString NodeName = Node->GetVariableName().ToString();
+        if (NodeName == ComponentName)
+        {
+            ChildNode = Node;
+        }
+        if (NodeName == ParentName)
+        {
+            ParentNode = Node;
+        }
+    }
+
+    if (!ChildNode)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Component not found: %s"), *ComponentName));
+    }
+
+    if (!ParentNode)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Parent component not found: %s"), *ParentName));
+    }
+
+    if (ChildNode == ParentNode)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Cannot attach a component to itself"));
+    }
+
+    // Verify the child is a SceneComponent (only scene components can be attached)
+    USceneComponent* ChildSceneComp = Cast<USceneComponent>(ChildNode->ComponentTemplate);
+    if (!ChildSceneComp)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Component '%s' is not a SceneComponent and cannot be attached"), *ComponentName));
+    }
+
+    USceneComponent* ParentSceneComp = Cast<USceneComponent>(ParentNode->ComponentTemplate);
+    if (!ParentSceneComp)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Parent '%s' is not a SceneComponent and cannot have children"), *ParentName));
+    }
+
+    // Detach child from its current location in the SCS tree.
+    // RemoveNodeAndPromoteChildren detaches the node from wherever it is
+    // (root list or parent's children) and promotes its children to its old parent.
+    // We save and restore the child's own children since we want to move the whole subtree.
+    TArray<USCS_Node*> SavedChildren = ChildNode->GetChildNodes();
+
+    // Find old parent for reporting
+    for (USCS_Node* PotentialParent : Blueprint->SimpleConstructionScript->GetAllNodes())
+    {
+        if (PotentialParent != ChildNode && PotentialParent->GetChildNodes().Contains(ChildNode))
+        {
+            OldParentNode = PotentialParent;
+            break;
+        }
+    }
+    bool bWasRoot = Blueprint->SimpleConstructionScript->GetRootNodes().Contains(ChildNode);
+
+    // Remove the node from the tree (this promotes children to old parent)
+    Blueprint->SimpleConstructionScript->RemoveNodeAndPromoteChildren(ChildNode);
+
+    // Re-add the saved children back under the child node
+    for (USCS_Node* Child : SavedChildren)
+    {
+        ChildNode->AddChildNode(Child);
+    }
+
+    // Attach to new parent
+    ParentNode->AddChildNode(ChildNode);
+
+    // Also set attachment on the component template so the CDO reflects it
+    ChildSceneComp->SetupAttachment(ParentSceneComp);
+
+    // Mark modified
+    Blueprint->Status = BS_Dirty;
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("component"), ComponentName);
+    ResultObj->SetStringField(TEXT("new_parent"), ParentName);
+    ResultObj->SetStringField(TEXT("old_parent"), OldParentNode ? OldParentNode->GetVariableName().ToString() : (bWasRoot ? TEXT("(root)") : TEXT("(unknown)")));
+    return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ============================================================
+// Remove a component from a Blueprint
+// ============================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleRemoveBlueprintComponent(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FString ComponentName;
+    if (!Params->TryGetStringField(TEXT("component_name"), ComponentName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'component_name' parameter"));
+    }
+
+    // Optional: promote children to parent when removing (default true)
+    bool bPromoteChildren = true;
+    Params->TryGetBoolField(TEXT("promote_children"), bPromoteChildren);
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    if (!Blueprint->SimpleConstructionScript)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint has no SimpleConstructionScript"));
+    }
+
+    // Find the SCS node to remove
+    USCS_Node* TargetNode = nullptr;
+    for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+    {
+        if (Node->GetVariableName().ToString() == ComponentName)
+        {
+            TargetNode = Node;
+            break;
+        }
+    }
+
+    if (!TargetNode)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Component '%s' not found in Blueprint SCS (only user-added components can be removed)"), *ComponentName));
+    }
+
+    int32 NumChildren = TargetNode->GetChildNodes().Num();
+    FString ComponentType = TargetNode->ComponentTemplate ? TargetNode->ComponentTemplate->GetClass()->GetName() : TEXT("unknown");
+
+    if (bPromoteChildren && NumChildren > 0)
+    {
+        Blueprint->SimpleConstructionScript->RemoveNodeAndPromoteChildren(TargetNode);
+    }
+    else
+    {
+        Blueprint->SimpleConstructionScript->RemoveNode(TargetNode);
+    }
+
+    // Mark modified
+    Blueprint->Status = BS_Dirty;
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("removed_component"), ComponentName);
+    ResultObj->SetStringField(TEXT("component_type"), ComponentType);
+    ResultObj->SetBoolField(TEXT("children_promoted"), bPromoteChildren && NumChildren > 0);
+    ResultObj->SetNumberField(TEXT("child_count"), NumChildren);
+    return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}

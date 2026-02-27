@@ -558,10 +558,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
     }
 
-    // Check if an actor with this name already exists
+    // Check if an actor with this name already exists (check both internal name and label)
     for (TActorIterator<AActor> It(World); It; ++It)
     {
-        if (It->GetName() == ActorName)
+        if (It->GetName() == ActorName || It->GetActorLabel() == ActorName)
         {
             return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
                 TEXT("Actor with name '%s' already exists. Use a different name or delete the existing actor first."), *ActorName));
@@ -575,6 +575,8 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
 
     FActorSpawnParameters SpawnParams;
     SpawnParams.Name = *ActorName;
+    // Use Requested mode so UE generates a unique name on conflict instead of fatal crash
+    SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
 
     AActor* NewActor = World->SpawnActor<AActor>(Blueprint->GeneratedClass, SpawnTransform, SpawnParams);
     if (NewActor)

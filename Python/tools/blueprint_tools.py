@@ -416,5 +416,87 @@ def register_blueprint_tools(mcp: FastMCP):
             error_msg = f"Error setting pawn properties: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
-    
+
+    @mcp.tool()
+    def reparent_blueprint_component(
+        ctx: Context,
+        blueprint_name: str,
+        component_name: str,
+        parent_name: str,
+    ) -> Dict[str, Any]:
+        """
+        Reparent (attach) a component to a different parent component within a Blueprint.
+        For example, attach a CameraComponent to a SpringArmComponent.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            component_name: Name of the component to reparent
+            parent_name: Name of the new parent component to attach to
+
+        Returns:
+            Dict containing the old and new parent information
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("reparent_blueprint_component", {
+                "blueprint_name": blueprint_name,
+                "component_name": component_name,
+                "parent_name": parent_name,
+            })
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            return response
+        except Exception as e:
+            error_msg = f"Error reparenting component: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def remove_blueprint_component(
+        ctx: Context,
+        blueprint_name: str,
+        component_name: str,
+        promote_children: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Remove a component from a Blueprint.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            component_name: Name of the component to remove
+            promote_children: If True, child components are promoted to the removed
+                component's parent instead of being deleted (default True)
+
+        Returns:
+            Dict containing removal details
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("remove_blueprint_component", {
+                "blueprint_name": blueprint_name,
+                "component_name": component_name,
+                "promote_children": promote_children,
+            })
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            return response
+        except Exception as e:
+            error_msg = f"Error removing component: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
     logger.info("Blueprint tools registered successfully") 

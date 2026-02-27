@@ -12,7 +12,7 @@
 
 This project enables AI assistant clients like Cursor, Windsurf, Claude Desktop, and Claude Code to control Unreal Engine through natural language using the Model Context Protocol (MCP).
 
-> **Fork note:** This is a fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with significant expansions — from ~35 tools to **96 tools** — covering materials, assets, levels, animation blueprints, PIE testing, RL agent support, visual feedback via screenshots, and more.
+> **Fork note:** This is a fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with significant expansions — from ~35 tools to **98 tools** — covering materials, assets, levels, animation blueprints, PIE testing, RL agent support, visual feedback via screenshots, and more.
 
 ## Warning: Experimental Status
 
@@ -25,12 +25,12 @@ This project is currently in an **EXPERIMENTAL** state. The API, functionality, 
 
 ## Overview
 
-The Unreal MCP integration provides **96 tools** across 9 categories for controlling Unreal Engine through natural language:
+The Unreal MCP integration provides **98 tools** across 9 categories for controlling Unreal Engine through natural language:
 
 | Category | Tools | Capabilities |
 |----------|:-----:|-------------|
 | **Editor** | 21 | Actor CRUD, transforms, properties, selection, duplication, viewport camera, material assignment (StaticMesh + SkeletalMesh), actor tags, PIE movement input, pawn actions (jump/crouch/launch), viewport screenshots with grid sequences |
-| **Blueprints** | 7 | Create Blueprint classes, add/configure components, set properties, physics, compile with error reporting |
+| **Blueprints** | 9 | Create Blueprint classes, add/configure/reparent/remove components, set properties, physics, compile with error reporting |
 | **Blueprint Nodes** | 20 | Events, functions, branches, loops, delays, timers, custom events, math ops, variables (get/set/add/remove/change type), pin defaults, self/component references, node connections |
 | **Level** | 11 | Create/load/save levels, Play-In-Editor (start/stop/query), console commands, build lighting, world settings |
 | **Materials** | 10 | Create materials and instances, scalar/vector/texture parameters, material expressions, node connections, apply to actors, recompile |
@@ -214,7 +214,7 @@ Add the following to your MCP configuration:
 | `take_screenshot` | Capture the viewport (game view during PIE, editor otherwise) and return as an image |
 | `take_screenshot_sequence` | Capture N screenshots over time and return as a single grid image |
 
-### Blueprint Tools (7)
+### Blueprint Tools (9)
 
 | Tool | Description |
 |------|-------------|
@@ -225,6 +225,8 @@ Add the following to your MCP configuration:
 | `set_physics_properties` | Configure physics (simulate, mass, damping, gravity) |
 | `compile_blueprint` | Compile a Blueprint (returns errors and warnings) |
 | `set_blueprint_property` | Set a property on the Blueprint class defaults (CDO) |
+| `reparent_blueprint_component` | Reparent (attach) a component to a different parent component |
+| `remove_blueprint_component` | Remove a component from a Blueprint (optionally promotes children) |
 
 ### Blueprint Node Tools (20)
 
