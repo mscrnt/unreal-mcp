@@ -31,6 +31,10 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "EditorUtilitySubsystem.h"
+#include "EditorUtilityWidgetBlueprint.h"
+#include "EditorUtilityWidget.h"
+#include "EditorAssetLibrary.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
@@ -129,6 +133,28 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("pawn_action"))
     {
         return HandlePawnAction(Params);
+    }
+
+    // Editor Utility Subsystem
+    else if (CommandType == TEXT("run_editor_utility"))
+    {
+        return HandleRunEditorUtility(Params);
+    }
+    else if (CommandType == TEXT("spawn_editor_utility_tab"))
+    {
+        return HandleSpawnEditorUtilityTab(Params);
+    }
+    else if (CommandType == TEXT("close_editor_utility_tab"))
+    {
+        return HandleCloseEditorUtilityTab(Params);
+    }
+    else if (CommandType == TEXT("does_editor_utility_tab_exist"))
+    {
+        return HandleDoesEditorUtilityTabExist(Params);
+    }
+    else if (CommandType == TEXT("find_editor_utility_widget"))
+    {
+        return HandleFindEditorUtilityWidget(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -437,18 +463,42 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorProperty(const T
     FString ErrorMessage;
     if (FUnrealMCPCommonUtils::SetObjectProperty(TargetActor, PropertyName, PropertyValue, ErrorMessage))
     {
-        // Property set successfully
+        // Property set successfully on the actor
         TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
         ResultObj->SetStringField(TEXT("actor"), ActorName);
         ResultObj->SetStringField(TEXT("property"), PropertyName);
         ResultObj->SetBoolField(TEXT("success"), true);
-        
-        // Also include the full actor details
         ResultObj->SetObjectField(TEXT("actor_details"), FUnrealMCPCommonUtils::ActorToJsonObject(TargetActor, true));
         return ResultObj;
     }
     else
     {
+        // Property not found on actor — fall back to searching actor's components.
+        // This handles SkeletalMeshActor.SkeletalMesh, StaticMeshActor.StaticMesh, etc.
+        for (UActorComponent* Component : TargetActor->GetComponents())
+        {
+            if (!Component) continue;
+            FString CompError;
+            if (FUnrealMCPCommonUtils::SetObjectProperty(Component, PropertyName, PropertyValue, CompError))
+            {
+                // Notify the component about the change
+                FProperty* ChangedProp = FindFProperty<FProperty>(Component->GetClass(), *PropertyName);
+                if (ChangedProp)
+                {
+                    FPropertyChangedEvent PropEvent(ChangedProp);
+                    Component->PostEditChangeProperty(PropEvent);
+                }
+
+                TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+                ResultObj->SetStringField(TEXT("actor"), ActorName);
+                ResultObj->SetStringField(TEXT("property"), PropertyName);
+                ResultObj->SetStringField(TEXT("set_on_component"), Component->GetName());
+                ResultObj->SetBoolField(TEXT("success"), true);
+                ResultObj->SetObjectField(TEXT("actor_details"), FUnrealMCPCommonUtils::ActorToJsonObject(TargetActor, true));
+                return ResultObj;
+            }
+        }
+        // Neither actor nor components had the property
         return FUnrealMCPCommonUtils::CreateErrorResponse(ErrorMessage);
     }
 }
@@ -922,6 +972,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetViewportCamera(const 
 
 	ViewportClient->Invalidate();
 
+	// Force an immediate redraw so the next screenshot reflects the new camera position
+	GEditor->RedrawAllViewports(true);
+
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	FVector Loc = ViewportClient->GetViewLocation();
 	FRotator Rot = ViewportClient->GetViewRotation();
@@ -1345,5 +1398,180 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandlePawnAction(const TShared
 		ResultObj->SetBoolField(TEXT("is_falling"), Character->GetCharacterMovement()->IsFalling());
 	}
 
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ============================================================================
+// Editor Utility Subsystem Tools
+// ============================================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleRunEditorUtility(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+	}
+
+	UObject* Asset = UEditorAssetLibrary::LoadAsset(AssetPath);
+	if (!Asset)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+	}
+
+	UEditorUtilitySubsystem* EUS = GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>();
+	if (!EUS)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get EditorUtilitySubsystem"));
+	}
+
+	if (!EUS->CanRun(Asset))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset cannot be run as an Editor Utility: %s. Must be an Editor Utility Blueprint or Editor Utility Widget Blueprint."), *AssetPath));
+	}
+
+	bool bSuccess = EUS->TryRun(Asset);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("asset_path"), AssetPath);
+	ResultObj->SetStringField(TEXT("asset_class"), Asset->GetClass()->GetName());
+	ResultObj->SetBoolField(TEXT("success"), bSuccess);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnEditorUtilityTab(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+	}
+
+	UObject* Asset = UEditorAssetLibrary::LoadAsset(AssetPath);
+	if (!Asset)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+	}
+
+	UEditorUtilityWidgetBlueprint* WidgetBP = Cast<UEditorUtilityWidgetBlueprint>(Asset);
+	if (!WidgetBP)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset is not an Editor Utility Widget Blueprint: %s (class: %s)"), *AssetPath, *Asset->GetClass()->GetName()));
+	}
+
+	UEditorUtilitySubsystem* EUS = GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>();
+	if (!EUS)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get EditorUtilitySubsystem"));
+	}
+
+	FName TabID;
+	FString RequestedTabId;
+	UEditorUtilityWidget* Widget = nullptr;
+
+	if (Params->TryGetStringField(TEXT("tab_id"), RequestedTabId) && !RequestedTabId.IsEmpty())
+	{
+		Widget = EUS->SpawnAndRegisterTabWithId(WidgetBP, FName(*RequestedTabId));
+		TabID = FName(*RequestedTabId);
+	}
+	else
+	{
+		Widget = EUS->SpawnAndRegisterTabAndGetID(WidgetBP, TabID);
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("asset_path"), AssetPath);
+	ResultObj->SetStringField(TEXT("tab_id"), TabID.ToString());
+	ResultObj->SetBoolField(TEXT("widget_created"), Widget != nullptr);
+	if (Widget)
+	{
+		ResultObj->SetStringField(TEXT("widget_class"), Widget->GetClass()->GetName());
+	}
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCloseEditorUtilityTab(const TSharedPtr<FJsonObject>& Params)
+{
+	FString TabId;
+	if (!Params->TryGetStringField(TEXT("tab_id"), TabId))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'tab_id' parameter"));
+	}
+
+	UEditorUtilitySubsystem* EUS = GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>();
+	if (!EUS)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get EditorUtilitySubsystem"));
+	}
+
+	bool bClosed = EUS->CloseTabByID(FName(*TabId));
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("tab_id"), TabId);
+	ResultObj->SetBoolField(TEXT("closed"), bClosed);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDoesEditorUtilityTabExist(const TSharedPtr<FJsonObject>& Params)
+{
+	FString TabId;
+	if (!Params->TryGetStringField(TEXT("tab_id"), TabId))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'tab_id' parameter"));
+	}
+
+	UEditorUtilitySubsystem* EUS = GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>();
+	if (!EUS)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get EditorUtilitySubsystem"));
+	}
+
+	bool bExists = EUS->DoesTabExist(FName(*TabId));
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("tab_id"), TabId);
+	ResultObj->SetBoolField(TEXT("exists"), bExists);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFindEditorUtilityWidget(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+	}
+
+	UObject* Asset = UEditorAssetLibrary::LoadAsset(AssetPath);
+	if (!Asset)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+	}
+
+	UEditorUtilityWidgetBlueprint* WidgetBP = Cast<UEditorUtilityWidgetBlueprint>(Asset);
+	if (!WidgetBP)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset is not an Editor Utility Widget Blueprint: %s"), *AssetPath));
+	}
+
+	UEditorUtilitySubsystem* EUS = GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>();
+	if (!EUS)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get EditorUtilitySubsystem"));
+	}
+
+	UEditorUtilityWidget* Widget = EUS->FindUtilityWidgetFromBlueprint(WidgetBP);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("asset_path"), AssetPath);
+	ResultObj->SetBoolField(TEXT("widget_found"), Widget != nullptr);
+	if (Widget)
+	{
+		ResultObj->SetStringField(TEXT("widget_class"), Widget->GetClass()->GetName());
+		ResultObj->SetStringField(TEXT("widget_name"), Widget->GetName());
+	}
 	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
 }

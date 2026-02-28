@@ -833,4 +833,120 @@ def register_editor_tools(mcp: FastMCP):
         except Exception as e:
             raise RuntimeError(f"Screenshot sequence failed: {e}")
 
+    # ========================================================================
+    # Editor Utility Subsystem Tools
+    # ========================================================================
+
+    @mcp.tool()
+    def run_editor_utility(ctx: Context, asset_path: str) -> Dict[str, Any]:
+        """
+        Run an Editor Utility Blueprint or Editor Utility Widget Blueprint.
+
+        This executes the utility's Run() function. For Editor Utility Widgets,
+        it also opens the widget in a tab.
+
+        Args:
+            asset_path: Content path to the Editor Utility asset (e.g. "/Game/EditorUtilities/EU_MyTool")
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("run_editor_utility", {"asset_path": asset_path})
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error running editor utility: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def spawn_editor_utility_tab(
+        ctx: Context,
+        asset_path: str,
+        tab_id: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Open an Editor Utility Widget Blueprint as an editor tab.
+
+        Creates a new tab in the editor containing the widget. Returns the tab ID
+        which can be used to close or check the tab later.
+
+        Args:
+            asset_path: Content path to the Editor Utility Widget Blueprint
+            tab_id: Optional explicit tab ID. If empty, one is auto-generated.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {"asset_path": asset_path}
+            if tab_id:
+                params["tab_id"] = tab_id
+            response = unreal.send_command("spawn_editor_utility_tab", params)
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error spawning editor utility tab: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def close_editor_utility_tab(ctx: Context, tab_id: str) -> Dict[str, Any]:
+        """
+        Close an Editor Utility Widget tab by its ID.
+
+        Args:
+            tab_id: The tab ID returned from spawn_editor_utility_tab
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("close_editor_utility_tab", {"tab_id": tab_id})
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error closing editor utility tab: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def does_editor_utility_tab_exist(ctx: Context, tab_id: str) -> Dict[str, Any]:
+        """
+        Check if an Editor Utility Widget tab exists (is currently open).
+
+        Args:
+            tab_id: The tab ID to check
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("does_editor_utility_tab_exist", {"tab_id": tab_id})
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error checking editor utility tab: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def find_editor_utility_widget(ctx: Context, asset_path: str) -> Dict[str, Any]:
+        """
+        Find the widget instance created by an Editor Utility Widget Blueprint.
+
+        Returns information about the widget if it is currently open in a tab.
+        Returns widget_found=false if the widget is not currently displayed.
+
+        Args:
+            asset_path: Content path to the Editor Utility Widget Blueprint
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("find_editor_utility_widget", {"asset_path": asset_path})
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error finding editor utility widget: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Editor tools registered successfully")

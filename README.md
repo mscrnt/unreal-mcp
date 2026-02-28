@@ -12,7 +12,7 @@
 
 This project enables AI assistant clients like Cursor, Windsurf, Claude Desktop, and Claude Code to control Unreal Engine through natural language using the Model Context Protocol (MCP).
 
-> **Fork note:** This is a fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with significant expansions — from ~35 tools to **98 tools** — covering materials, assets, levels, animation blueprints, PIE testing, RL agent support, visual feedback via screenshots, and more.
+> **Fork note:** This is a fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with significant expansions — from ~35 tools to **107 tools** — covering materials, assets, levels, animation blueprints, PIE testing, RL agent support, visual feedback via screenshots, Editor Utility Widgets, and more.
 
 ## Warning: Experimental Status
 
@@ -25,16 +25,16 @@ This project is currently in an **EXPERIMENTAL** state. The API, functionality, 
 
 ## Overview
 
-The Unreal MCP integration provides **98 tools** across 9 categories for controlling Unreal Engine through natural language:
+The Unreal MCP integration provides **107 tools** across 9 categories for controlling Unreal Engine through natural language:
 
 | Category | Tools | Capabilities |
 |----------|:-----:|-------------|
-| **Editor** | 21 | Actor CRUD, transforms, properties, selection, duplication, viewport camera, material assignment (StaticMesh + SkeletalMesh), actor tags, PIE movement input, pawn actions (jump/crouch/launch), viewport screenshots with grid sequences |
+| **Editor** | 26 | Actor CRUD, transforms, properties, selection, duplication, viewport camera, material assignment (StaticMesh + SkeletalMesh), actor tags, PIE movement input, pawn actions (jump/crouch/launch), viewport screenshots with grid sequences, Editor Utility Widget tab management |
 | **Blueprints** | 9 | Create Blueprint classes, add/configure/reparent/remove components, set properties, physics, compile with error reporting |
-| **Blueprint Nodes** | 20 | Events, functions, branches, loops, delays, timers, custom events, math ops, variables (get/set/add/remove/change type), pin defaults, self/component references, node connections |
+| **Blueprint Nodes** | 21 | Events, functions, branches, loops, delays, timers, custom events, math ops, variables (get/set/add/remove/change type), pin defaults, self/component references, node connections, node deletion |
 | **Level** | 11 | Create/load/save levels, Play-In-Editor (start/stop/query), console commands, build lighting, world settings |
-| **Materials** | 10 | Create materials and instances, scalar/vector/texture parameters, material expressions, node connections, apply to actors, recompile |
-| **Assets** | 9 | List/find/duplicate/delete/rename/import/save assets, create folders, existence checks |
+| **Materials** | 12 | Create materials and instances, scalar/vector/texture parameters, 30+ material expression types, expression property editing, node connections, apply to actors, recompile |
+| **Assets** | 10 | List/find/duplicate/delete/rename/import/save/open assets, create folders, existence checks |
 | **Project** | 7 | Game mode, default maps, Enhanced Input actions and mapping contexts, project settings (read/write) |
 | **UMG Widgets** | 6 | Create widget blueprints, text blocks, buttons, event bindings, viewport display, property bindings |
 | **Animation** | 7 | Create AnimBPs, state machines, states, transitions, animation assignment, transition rules |
@@ -188,7 +188,7 @@ Add the following to your MCP configuration:
 
 ## Tool Reference
 
-### Editor Tools (21)
+### Editor Tools (26)
 
 | Tool | Description |
 |------|-------------|
@@ -198,7 +198,7 @@ Add the following to your MCP configuration:
 | `delete_actor` | Delete an actor by name |
 | `set_actor_transform` | Set position, rotation, and scale |
 | `get_actor_properties` | Get all properties of an actor |
-| `set_actor_property` | Set a property on an actor (supports arrays, enums, structs, objects) |
+| `set_actor_property` | Set a property on an actor or its components (supports arrays, enums, structs, objects) |
 | `spawn_blueprint_actor` | Spawn an actor from a Blueprint |
 | `select_actors` | Select actors in the editor by name |
 | `get_selected_actors` | Get the currently selected actors |
@@ -213,6 +213,11 @@ Add the following to your MCP configuration:
 | `pawn_action` | Execute pawn actions during PIE (jump, crouch, launch) |
 | `take_screenshot` | Capture the viewport (game view during PIE, editor otherwise) and return as an image |
 | `take_screenshot_sequence` | Capture N screenshots over time and return as a single grid image |
+| `run_editor_utility` | Run an Editor Utility Blueprint or Widget |
+| `spawn_editor_utility_tab` | Open an Editor Utility Widget as an editor tab |
+| `close_editor_utility_tab` | Close an Editor Utility Widget tab by ID |
+| `does_editor_utility_tab_exist` | Check if an Editor Utility Widget tab is open |
+| `find_editor_utility_widget` | Find the widget instance from a spawned Editor Utility tab |
 
 ### Blueprint Tools (9)
 
@@ -228,7 +233,7 @@ Add the following to your MCP configuration:
 | `reparent_blueprint_component` | Reparent (attach) a component to a different parent component |
 | `remove_blueprint_component` | Remove a component from a Blueprint (optionally promotes children) |
 
-### Blueprint Node Tools (20)
+### Blueprint Node Tools (21)
 
 | Tool | Description |
 |------|-------------|
@@ -252,6 +257,7 @@ Add the following to your MCP configuration:
 | `add_blueprint_math_node` | Add math operations (+, -, *, /, >, <, ==, !=) |
 | `remove_blueprint_variable` | Remove a variable from a Blueprint |
 | `change_blueprint_variable_type` | Change a variable's type |
+| `delete_blueprint_node` | Delete a node from a Blueprint graph by ID |
 
 ### Level Tools (11)
 
@@ -269,7 +275,7 @@ Add the following to your MCP configuration:
 | `build_lighting` | Build lighting (Preview, Medium, High, Production) |
 | `set_world_settings` | Set game mode, kill Z, etc. |
 
-### Material Tools (10)
+### Material Tools (12)
 
 | Tool | Description |
 |------|-------------|
@@ -278,13 +284,15 @@ Add the following to your MCP configuration:
 | `set_material_scalar_param` | Set scalar parameter on a material instance |
 | `set_material_vector_param` | Set vector/color parameter on a material instance |
 | `set_material_texture_param` | Set texture parameter on a material instance |
-| `add_material_expression` | Add expression nodes (Constant, Multiply, Lerp, etc.) |
+| `add_material_expression` | Add expression nodes (30+ types: Constant, Multiply, Lerp, Fresnel, Panner, TextureSample, ComponentMask, If, etc.) |
 | `connect_material_expressions` | Connect two expression nodes |
 | `connect_material_property` | Connect expression to material output (BaseColor, Roughness, etc.) |
 | `apply_material_to_actor` | Apply material to an actor's mesh |
 | `recompile_material` | Recompile a material after graph changes |
+| `set_material_expression_property` | Set a property on an expression node (texture, atlas, mask flags, etc.) |
+| `get_material_expressions` | List all expression nodes in a material with index, name, class, and caption |
 
-### Asset Tools (9)
+### Asset Tools (10)
 
 | Tool | Description |
 |------|-------------|
@@ -297,6 +305,7 @@ Add the following to your MCP configuration:
 | `create_folder` | Create a content browser folder |
 | `import_asset` | Import an external file (textures, meshes, etc.) |
 | `save_asset` | Save a specific asset to disk |
+| `open_asset` | Open an asset in its editor (Blueprint Editor, Material Editor, etc.) |
 
 ### Project & Gameplay Tools (7)
 

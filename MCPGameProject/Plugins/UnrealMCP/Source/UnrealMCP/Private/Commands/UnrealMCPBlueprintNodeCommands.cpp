@@ -1,5 +1,6 @@
 #include "Commands/UnrealMCPBlueprintNodeCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
+#include "Editor.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "EdGraph/EdGraph.h"
@@ -16,6 +17,8 @@
 #include "K2Node_VariableSet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "Engine/SCS_Node.h"
 #include "GameFramework/InputSettings.h"
 #include "Camera/CameraActor.h"
 #include "Kismet/GameplayStatics.h"
@@ -32,6 +35,15 @@ FUnrealMCPBlueprintNodeCommands::FUnrealMCPBlueprintNodeCommands()
 
 TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
 {
+    // Blueprint graph editing during PIE causes crashes — node operations trigger
+    // MarkBlueprintAsModified and other editor subsystems that aren't stable during gameplay.
+    if (GEditor && GEditor->IsPlayingSessionInEditor())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("Cannot modify Blueprint graphs while Play-In-Editor is active. "
+                 "Call stop_play_in_editor first, make your Blueprint changes, then call play_in_editor to resume."));
+    }
+
     if (CommandType == TEXT("connect_blueprint_nodes"))
     {
         return HandleConnectBlueprintNodes(Params);
@@ -112,6 +124,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleCommand(const FSt
     else if (CommandType == TEXT("change_blueprint_variable_type"))
     {
         return HandleChangeBlueprintVariableType(Params);
+    }
+    else if (CommandType == TEXT("delete_blueprint_node"))
+    {
+        return HandleDeleteBlueprintNode(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint node command: %s"), *CommandType));
@@ -228,44 +244,110 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintGetSe
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
     }
 
+    // Verify the component exists in SCS
+    bool bFoundComponent = false;
+    FName FoundVarName;
+    UClass* ComponentClass = nullptr;
+    if (Blueprint->SimpleConstructionScript)
+    {
+        for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+        {
+            if (Node && Node->GetVariableName().ToString() == ComponentName)
+            {
+                bFoundComponent = true;
+                FoundVarName = Node->GetVariableName();
+                if (Node->ComponentTemplate)
+                {
+                    ComponentClass = Node->ComponentTemplate->GetClass();
+                }
+                break;
+            }
+        }
+    }
+    if (!bFoundComponent)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Component '%s' not found in Blueprint SCS. Make sure the Blueprint is compiled first (call compile_blueprint)."),
+            *ComponentName));
+    }
+
+    // Ensure the Blueprint is compiled so the generated class has the component property
+    if (Blueprint->GeneratedClass == nullptr || Blueprint->Status == BS_Dirty)
+    {
+        FKismetEditorUtilities::CompileBlueprint(Blueprint);
+    }
+
+    // Verify the property exists on the generated class
+    FProperty* ComponentProp = nullptr;
+    if (Blueprint->GeneratedClass)
+    {
+        ComponentProp = FindFProperty<FProperty>(Blueprint->GeneratedClass, FoundVarName);
+    }
+    if (!ComponentProp)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Component property '%s' not found on generated class after compile. The component may need a different variable name."),
+            *ComponentName));
+    }
+
     // Get the event graph
     UEdGraph* EventGraph = FUnrealMCPCommonUtils::FindOrCreateEventGraph(Blueprint);
     if (!EventGraph)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get event graph"));
     }
-    
-    // We'll skip component verification since the GetAllNodes API may have changed in UE5.5
-    
-    // Create the variable get node directly
+
+    // Create the variable get node
     UK2Node_VariableGet* GetComponentNode = NewObject<UK2Node_VariableGet>(EventGraph);
     if (!GetComponentNode)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create get component node"));
     }
-    
-    // Set up the variable reference properly for UE5.5
-    FMemberReference& VarRef = GetComponentNode->VariableReference;
-    VarRef.SetSelfMember(FName(*ComponentName));
-    
+
+    // Set up the variable reference using the resolved variable name
+    GetComponentNode->VariableReference.SetSelfMember(FoundVarName);
+
     // Set node position
     GetComponentNode->NodePosX = NodePosition.X;
     GetComponentNode->NodePosY = NodePosition.Y;
-    
-    // Add to graph
+
+    // Add to graph and initialize pins
     EventGraph->AddNode(GetComponentNode);
     GetComponentNode->CreateNewGuid();
     GetComponentNode->PostPlacedNewNode();
     GetComponentNode->AllocateDefaultPins();
-    
-    // Explicitly reconstruct node for UE5.5
     GetComponentNode->ReconstructNode();
-    
+
     // Mark the blueprint as modified
     FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
+    // Return node info with pins so the caller can wire connections
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("node_id"), GetComponentNode->NodeGuid.ToString());
+    ResultObj->SetStringField(TEXT("variable_name"), FoundVarName.ToString());
+    if (ComponentClass)
+    {
+        ResultObj->SetStringField(TEXT("component_class"), ComponentClass->GetName());
+    }
+
+    // Include pin details
+    TArray<TSharedPtr<FJsonValue>> PinsArray;
+    for (UEdGraphPin* Pin : GetComponentNode->Pins)
+    {
+        if (!Pin) continue;
+        TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+        PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+        PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("input") : TEXT("output"));
+        PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+        PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+    }
+    ResultObj->SetArrayField(TEXT("pins"), PinsArray);
+
+    if (PinsArray.Num() == 0)
+    {
+        ResultObj->SetStringField(TEXT("warning"), TEXT("Node created but has no pins. Try calling compile_blueprint first, then create the component reference node."));
+    }
+
     return ResultObj;
 }
 
@@ -1725,5 +1807,67 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleChangeBlueprintVa
 	ResultObj->SetStringField(TEXT("variable"), VariableName);
 	ResultObj->SetStringField(TEXT("old_type"), OldType);
 	ResultObj->SetStringField(TEXT("new_type"), NewType);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleDeleteBlueprintNode(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintName;
+	if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+	}
+
+	FString NodeId;
+	if (!Params->TryGetStringField(TEXT("node_id"), NodeId))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_id' parameter"));
+	}
+
+	UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+	if (!Blueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+	}
+
+	// Search all graphs (event graphs + function graphs) for the node
+	TArray<UEdGraph*> AllGraphs;
+	AllGraphs.Append(Blueprint->UbergraphPages);
+	AllGraphs.Append(Blueprint->FunctionGraphs);
+
+	UEdGraphNode* TargetNode = nullptr;
+	UEdGraph* TargetGraph = nullptr;
+	for (UEdGraph* Graph : AllGraphs)
+	{
+		if (!Graph) continue;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node && Node->NodeGuid.ToString() == NodeId)
+			{
+				TargetNode = Node;
+				TargetGraph = Graph;
+				break;
+			}
+		}
+		if (TargetNode) break;
+	}
+
+	if (!TargetNode)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Node not found: %s"), *NodeId));
+	}
+
+	// Get node info before deleting
+	FString NodeTitle = TargetNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
+	FString NodeClass = TargetNode->GetClass()->GetName();
+
+	// Remove the node
+	TargetGraph->RemoveNode(TargetNode);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("deleted_node_id"), NodeId);
+	ResultObj->SetStringField(TEXT("node_title"), NodeTitle);
+	ResultObj->SetStringField(TEXT("node_class"), NodeClass);
 	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
 }

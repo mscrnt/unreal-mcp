@@ -264,7 +264,12 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_actor_tags") ||
                      CommandType == TEXT("get_actor_tags") ||
                      CommandType == TEXT("add_movement_input") ||
-                     CommandType == TEXT("pawn_action"))
+                     CommandType == TEXT("pawn_action") ||
+                     CommandType == TEXT("run_editor_utility") ||
+                     CommandType == TEXT("spawn_editor_utility_tab") ||
+                     CommandType == TEXT("close_editor_utility_tab") ||
+                     CommandType == TEXT("does_editor_utility_tab_exist") ||
+                     CommandType == TEXT("find_editor_utility_widget"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }
@@ -303,7 +308,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_node_pin_default_value") ||
                      CommandType == TEXT("add_blueprint_math_node") ||
                      CommandType == TEXT("remove_blueprint_variable") ||
-                     CommandType == TEXT("change_blueprint_variable_type"))
+                     CommandType == TEXT("change_blueprint_variable_type") ||
+                     CommandType == TEXT("delete_blueprint_node"))
             {
                 ResultJson = BlueprintNodeCommands->HandleCommand(CommandType, Params);
             }
@@ -347,7 +353,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("connect_material_expressions") ||
                      CommandType == TEXT("connect_material_property") ||
                      CommandType == TEXT("apply_material_to_actor") ||
-                     CommandType == TEXT("recompile_material"))
+                     CommandType == TEXT("recompile_material") ||
+                     CommandType == TEXT("set_material_expression_property") ||
+                     CommandType == TEXT("get_material_expressions"))
             {
                 ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
             }
@@ -360,7 +368,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("rename_asset") ||
                      CommandType == TEXT("create_folder") ||
                      CommandType == TEXT("import_asset") ||
-                     CommandType == TEXT("save_asset"))
+                     CommandType == TEXT("save_asset") ||
+                     CommandType == TEXT("open_asset"))
             {
                 // Map delete_asset_file to the handler's delete_asset
                 FString ActualCommand = CommandType;

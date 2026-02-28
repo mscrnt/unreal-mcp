@@ -809,4 +809,30 @@ def register_blueprint_node_tools(mcp: FastMCP):
         except Exception as e:
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def delete_blueprint_node(
+        ctx: Context,
+        blueprint_name: str,
+        node_id: str
+    ) -> dict:
+        """
+        Delete a node from a Blueprint's event graph.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            node_id: GUID of the node to delete (obtained from find_blueprint_nodes or add_blueprint_* tools)
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("delete_blueprint_node", {
+                "blueprint_name": blueprint_name,
+                "node_id": node_id
+            })
+            return response or {}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     logger.info("Blueprint node tools registered successfully")

@@ -6,6 +6,7 @@
 #include "IAssetTools.h"
 #include "AssetImportTask.h"
 #include "Editor.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 FUnrealMCPAssetCommands::FUnrealMCPAssetCommands()
 {
@@ -48,6 +49,10 @@ TSharedPtr<FJsonObject> FUnrealMCPAssetCommands::HandleCommand(const FString& Co
 	else if (CommandType == TEXT("save_asset"))
 	{
 		return HandleSaveAsset(Params);
+	}
+	else if (CommandType == TEXT("open_asset"))
+	{
+		return HandleOpenAsset(Params);
 	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown asset command: %s"), *CommandType));
@@ -347,5 +352,34 @@ TSharedPtr<FJsonObject> FUnrealMCPAssetCommands::HandleSaveAsset(const TSharedPt
 	{
 		ResultObj->SetStringField(TEXT("asset_class"), Asset->GetClass()->GetName());
 	}
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPAssetCommands::HandleOpenAsset(const TSharedPtr<FJsonObject>& Params)
+{
+	FString Path;
+	if (!Params->TryGetStringField(TEXT("path"), Path))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'path' parameter"));
+	}
+
+	UObject* Asset = UEditorAssetLibrary::LoadAsset(Path);
+	if (!Asset)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Asset not found: %s"), *Path));
+	}
+
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (!AssetEditorSubsystem)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get AssetEditorSubsystem"));
+	}
+
+	bool bOpened = AssetEditorSubsystem->OpenEditorForAsset(Asset);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("path"), Path);
+	ResultObj->SetStringField(TEXT("asset_class"), Asset->GetClass()->GetName());
+	ResultObj->SetBoolField(TEXT("opened"), bOpened);
 	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
 }

@@ -1,5 +1,6 @@
 #include "Commands/UnrealMCPBlueprintCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
+#include "Editor.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Factories/BlueprintFactory.h"
@@ -8,6 +9,7 @@
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/BoxComponent.h"
 #include "Components/SphereComponent.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -32,6 +34,17 @@ FUnrealMCPBlueprintCommands::FUnrealMCPBlueprintCommands()
 
 TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
 {
+    // Blueprint editing during PIE causes crashes — PostEditChangeProperty,
+    // MarkBlueprintAsModified, and compile all trigger TEDS/editor subsystems
+    // that aren't stable during gameplay. Block all blueprint modifications.
+    // spawn_blueprint_actor is excluded since it just spawns from an existing BP.
+    if (GEditor && GEditor->IsPlayingSessionInEditor() && CommandType != TEXT("spawn_blueprint_actor"))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("Cannot modify Blueprints while Play-In-Editor is active. "
+                 "Call stop_play_in_editor first, make your Blueprint changes, then call play_in_editor to resume."));
+    }
+
     if (CommandType == TEXT("create_blueprint"))
     {
         return HandleCreateBlueprint(Params);
@@ -320,6 +333,27 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddComponentToBluepri
             Blueprint->SimpleConstructionScript->AddNode(NewNode);
         }
 
+        // Apply component_properties if provided
+        const TSharedPtr<FJsonObject>* PropsObj;
+        TArray<FString> AppliedProps;
+        TArray<FString> FailedProps;
+        if (Params->TryGetObjectField(TEXT("component_properties"), PropsObj))
+        {
+            UObject* CompTemplate = NewNode->ComponentTemplate;
+            for (auto& PropPair : (*PropsObj)->Values)
+            {
+                FString ErrorMsg;
+                if (FUnrealMCPCommonUtils::SetObjectProperty(CompTemplate, PropPair.Key, PropPair.Value, ErrorMsg))
+                {
+                    AppliedProps.Add(PropPair.Key);
+                }
+                else
+                {
+                    FailedProps.Add(FString::Printf(TEXT("%s: %s"), *PropPair.Key, *ErrorMsg));
+                }
+            }
+        }
+
         // Mark blueprint as modified — do NOT compile here; use compile_blueprint tool separately
         Blueprint->Status = BS_Dirty;
         FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
@@ -335,6 +369,19 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddComponentToBluepri
         {
             ResultObj->SetStringField(TEXT("attached_to"), TEXT("(added as root)"));
         }
+        if (AppliedProps.Num() > 0)
+        {
+            TArray<TSharedPtr<FJsonValue>> PropArr;
+            for (const FString& P : AppliedProps) PropArr.Add(MakeShared<FJsonValueString>(P));
+            ResultObj->SetArrayField(TEXT("applied_properties"), PropArr);
+        }
+        if (FailedProps.Num() > 0)
+        {
+            TArray<TSharedPtr<FJsonValue>> FailArr;
+            for (const FString& F : FailedProps) FailArr.Add(MakeShared<FJsonValueString>(F));
+            ResultObj->SetArrayField(TEXT("failed_properties"), FailArr);
+        }
+        ResultObj->SetStringField(TEXT("note"), TEXT("Call compile_blueprint and save_asset after setting all properties to persist changes."));
         return ResultObj;
     }
 
@@ -403,13 +450,54 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
             Blueprint->GeneratedClass ? *Blueprint->GeneratedClass->GetName() : TEXT("NULL"));
     }
 
-    // Find the component (SCS nodes + CDO inherited)
-    FString DiagInfo;
-    UObject* ComponentTemplate = FindBlueprintComponent(Blueprint, ComponentName, DiagInfo);
+    // Find the component in SCS nodes (user-added components)
+    UObject* ComponentTemplate = nullptr;
+
+    // Method 1: SCS nodes (user-added components — safe to modify directly)
+    if (Blueprint->SimpleConstructionScript)
+    {
+        for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+        {
+            if (Node && Node->GetVariableName().ToString() == ComponentName)
+            {
+                ComponentTemplate = Node->ComponentTemplate;
+                break;
+            }
+        }
+    }
+
+    // If not found in SCS, it's an inherited component from the parent C++ class.
+    // Do NOT call GetDefaultObject() to find it — that causes UE's TEDS (Typed Element
+    // Data Storage) system to register CDO subobjects, which then crash on the next
+    // editor tick when TEDS calls GetWorld() on them (engine bug).
+    // Instead, return an actionable error telling the agent how to proceed.
     if (!ComponentTemplate)
     {
-        UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - %s"), *DiagInfo);
-        return FUnrealMCPCommonUtils::CreateErrorResponse(DiagInfo);
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("'%s' is an inherited component from the parent C++ class and cannot be modified directly via set_component_property. "
+                "To customize inherited components: "
+                "(1) Use add_component_to_blueprint to add a NEW component of the same type with your desired properties, or "
+                "(2) Use Blueprint event graph nodes (e.g. BeginPlay -> SetRelativeLocation) to set properties at runtime, or "
+                "(3) For capsule size, use add_component_to_blueprint to add a new CapsuleComponent and configure it as the root."),
+                *ComponentName));
+    }
+
+    // Block AnimationMode on SkeletalMeshComponent — it corrupts the CDO during
+    // blueprint compilation (EXCEPTION_ACCESS_VIOLATION in MoveCDOToNewClass via
+    // UMassEntityEditorSubsystem::Tick). AnimationMode auto-resolves when AnimClass
+    // is set, so it never needs to be set directly.
+    if (ComponentTemplate->IsA(USkeletalMeshComponent::StaticClass()) && PropertyName == TEXT("AnimationMode"))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("Cannot set 'AnimationMode' on SkeletalMeshComponent via set_component_property — "
+                 "this crashes the editor during blueprint compilation. "
+                 "AnimationMode auto-resolves based on other settings, so you do NOT need to set it. "
+                 "To use an Animation Blueprint: set 'AnimClass' to the AnimBP's generated class path "
+                 "(e.g. set_component_property with property_name='AnimClass' and "
+                 "property_value='/Game/Animations/ABP_MyChar.ABP_MyChar_C'). "
+                 "The component will automatically use AnimationBlueprint mode. "
+                 "To play a single animation at runtime: use Blueprint nodes — "
+                 "call 'Play Animation' or 'Override Animation Data' on the component in BeginPlay."));
     }
 
     // Check if this is a Spring Arm component and log special debug info
@@ -556,7 +644,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
     if (Params->HasField(TEXT("property_value")))
     {
         TSharedPtr<FJsonValue> JsonValue = Params->Values.FindRef(TEXT("property_value"));
-        
+
+        // Mark object for undo/redo tracking before modification
+        ComponentTemplate->Modify();
+
         // Get the property
         FProperty* Property = FindFProperty<FProperty>(ComponentTemplate->GetClass(), *PropertyName);
         if (!Property)
@@ -773,13 +864,23 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
 
         if (bSuccess)
         {
-            // Notify the property system about the change and mark dirty for persistence
-            FPropertyChangedEvent PropertyChangedEvent(
-                FindFProperty<FProperty>(ComponentTemplate->GetClass(), *PropertyName));
-            ComponentTemplate->PostEditChangeProperty(PropertyChangedEvent);
-
             UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Successfully set property %s on component %s"),
                 *PropertyName, *ComponentName);
+
+            // Notify property system and mark Blueprint as modified.
+            // SkeletalMeshComponent has complex internal state (anim instances,
+            // physics assets, LOD management) that can crash during
+            // PostEditChangeProperty — especially for properties like
+            // AnimationMode that trigger deep re-initialization. Skip the
+            // notification for skeletal mesh components and rely on blueprint
+            // modification + recompile to propagate the change safely.
+            FProperty* ChangedProp = FindFProperty<FProperty>(ComponentTemplate->GetClass(), *PropertyName);
+            bool bSkipNotify = ComponentTemplate->IsA(USkeletalMeshComponent::StaticClass());
+            if (ChangedProp && !bSkipNotify)
+            {
+                FPropertyChangedEvent PropertyChangedEvent(ChangedProp);
+                ComponentTemplate->PostEditChangeProperty(PropertyChangedEvent);
+            }
             FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
             Blueprint->MarkPackageDirty();
 
@@ -787,6 +888,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
             ResultObj->SetStringField(TEXT("component"), ComponentName);
             ResultObj->SetStringField(TEXT("property"), PropertyName);
             ResultObj->SetBoolField(TEXT("success"), true);
+            ResultObj->SetStringField(TEXT("note"), TEXT("Property set on template. Call compile_blueprint then save_asset to persist changes."));
             return ResultObj;
         }
         else
@@ -894,12 +996,8 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCompileBlueprint(cons
     // Refresh all nodes to ensure consistent state before compilation
     FBlueprintEditorUtils::RefreshAllNodes(Blueprint);
 
-    // Compile with safe options and capture results log
-    EBlueprintCompileOptions CompileOptions =
-        EBlueprintCompileOptions::SkipGarbageCollection | EBlueprintCompileOptions::SkipReinstancing;
-
     FCompilerResultsLog CompileResults;
-    FKismetEditorUtilities::CompileBlueprint(Blueprint, CompileOptions, &CompileResults);
+    FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &CompileResults);
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("name"), BlueprintName);
@@ -1186,28 +1284,23 @@ UObject* FUnrealMCPBlueprintCommands::FindBlueprintComponent(UBlueprint* Bluepri
             });
             if (Found) return Found;
 
-            // 2c: Parent class CDO
+            // 2c: Parent class CDO — diagnostic only, NEVER return parent CDO subobjects!
+            // Modifying a parent class CDO subobject corrupts the parent class for ALL
+            // derived Blueprints, causing crashes on compile and save.
             TArray<FString> ParentNames;
             if (Blueprint->ParentClass)
             {
                 UObject* ParentCDO = Blueprint->ParentClass->GetDefaultObject();
                 if (ParentCDO && ParentCDO != CDO)
                 {
-                    SubObj = ParentCDO->GetDefaultSubobjectByName(FName(*ComponentName));
-                    if (SubObj) return SubObj;
-
+                    // Only collect names for diagnostics — do NOT return these objects
                     ForEachObjectWithOuter(ParentCDO, [&](UObject* SubObject)
                     {
                         if (SubObject)
                         {
                             ParentNames.Add(FString::Printf(TEXT("%s(%s)"), *SubObject->GetName(), *SubObject->GetClass()->GetName()));
-                            if (!Found && (SubObject->GetName() == ComponentName || SubObject->GetName().Contains(ComponentName)))
-                            {
-                                Found = SubObject;
-                            }
                         }
                     });
-                    if (Found) return Found;
                 }
             }
 

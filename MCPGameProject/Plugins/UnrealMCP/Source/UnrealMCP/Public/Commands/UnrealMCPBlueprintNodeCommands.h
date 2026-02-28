@@ -40,4 +40,7 @@ private:
     // Variable management
     TSharedPtr<FJsonObject> HandleRemoveBlueprintVariable(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleChangeBlueprintVariableType(const TSharedPtr<FJsonObject>& Params);
+
+    // Node management
+    TSharedPtr<FJsonObject> HandleDeleteBlueprintNode(const TSharedPtr<FJsonObject>& Params);
 }; 

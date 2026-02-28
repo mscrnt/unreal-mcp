@@ -58,7 +58,8 @@ public class UnrealMCP : ModuleRules
 				"AssetTools",               // Asset importing
 				"EnhancedInput",            // Enhanced Input System
 				"AnimGraph",                // Animation Blueprint graphs
-				"AnimGraphRuntime"          // Animation graph runtime nodes
+				"AnimGraphRuntime",         // Animation graph runtime nodes
+				"Blutility"                 // Editor Utility Widgets/Blueprints
 			}
 		);
 		

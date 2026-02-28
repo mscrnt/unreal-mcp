@@ -68,6 +68,14 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleCommand(const FString&
 	{
 		return HandleRecompileMaterial(Params);
 	}
+	else if (CommandType == TEXT("set_material_expression_property"))
+	{
+		return HandleSetMaterialExpressionProperty(Params);
+	}
+	else if (CommandType == TEXT("get_material_expressions"))
+	{
+		return HandleGetMaterialExpressions(Params);
+	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown material command: %s"), *CommandType));
 }
@@ -338,19 +346,60 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleAddMaterialExpression(
 	// Map expression type string to class
 	UClass* ExpressionClass = nullptr;
 
-	// Common expression types
+	// Common expression types — lazy-initialized map
 	static TMap<FString, UClass*> ExpressionMap;
 	if (ExpressionMap.Num() == 0)
 	{
+		// Constants
 		ExpressionMap.Add(TEXT("Constant"), UMaterialExpressionConstant::StaticClass());
 		ExpressionMap.Add(TEXT("Constant3Vector"), UMaterialExpressionConstant3Vector::StaticClass());
 		ExpressionMap.Add(TEXT("Constant4Vector"), UMaterialExpressionConstant4Vector::StaticClass());
+		// Texture
 		ExpressionMap.Add(TEXT("TextureSample"), UMaterialExpressionTextureSample::StaticClass());
+		ExpressionMap.Add(TEXT("TextureObjectParameter"), UMaterialExpressionTextureObjectParameter::StaticClass());
+		// Parameters
 		ExpressionMap.Add(TEXT("ScalarParameter"), UMaterialExpressionScalarParameter::StaticClass());
 		ExpressionMap.Add(TEXT("VectorParameter"), UMaterialExpressionVectorParameter::StaticClass());
+		// Math
 		ExpressionMap.Add(TEXT("Multiply"), UMaterialExpressionMultiply::StaticClass());
 		ExpressionMap.Add(TEXT("Add"), UMaterialExpressionAdd::StaticClass());
+		ExpressionMap.Add(TEXT("Subtract"), FindFirstObject<UClass>(TEXT("MaterialExpressionSubtract")));
+		ExpressionMap.Add(TEXT("Divide"), FindFirstObject<UClass>(TEXT("MaterialExpressionDivide")));
+		ExpressionMap.Add(TEXT("Power"), FindFirstObject<UClass>(TEXT("MaterialExpressionPower")));
+		ExpressionMap.Add(TEXT("Abs"), FindFirstObject<UClass>(TEXT("MaterialExpressionAbs")));
+		ExpressionMap.Add(TEXT("Min"), FindFirstObject<UClass>(TEXT("MaterialExpressionMin")));
+		ExpressionMap.Add(TEXT("Max"), FindFirstObject<UClass>(TEXT("MaterialExpressionMax")));
+		ExpressionMap.Add(TEXT("Clamp"), FindFirstObject<UClass>(TEXT("MaterialExpressionClamp")));
+		ExpressionMap.Add(TEXT("Saturate"), FindFirstObject<UClass>(TEXT("MaterialExpressionSaturate")));
+		ExpressionMap.Add(TEXT("OneMinus"), FindFirstObject<UClass>(TEXT("MaterialExpressionOneMinus")));
+		ExpressionMap.Add(TEXT("Dot"), FindFirstObject<UClass>(TEXT("MaterialExpressionDotProduct")));
+		ExpressionMap.Add(TEXT("CrossProduct"), FindFirstObject<UClass>(TEXT("MaterialExpressionCrossProduct")));
+		// Interpolation
 		ExpressionMap.Add(TEXT("Lerp"), UMaterialExpressionLinearInterpolate::StaticClass());
+		ExpressionMap.Add(TEXT("SmoothStep"), FindFirstObject<UClass>(TEXT("MaterialExpressionSmoothStep")));
+		ExpressionMap.Add(TEXT("Step"), FindFirstObject<UClass>(TEXT("MaterialExpressionStep")));
+		// Utility
+		ExpressionMap.Add(TEXT("Append"), FindFirstObject<UClass>(TEXT("MaterialExpressionAppendVector")));
+		ExpressionMap.Add(TEXT("ComponentMask"), FindFirstObject<UClass>(TEXT("MaterialExpressionComponentMask")));
+		ExpressionMap.Add(TEXT("Fresnel"), FindFirstObject<UClass>(TEXT("MaterialExpressionFresnel")));
+		ExpressionMap.Add(TEXT("Normalize"), FindFirstObject<UClass>(TEXT("MaterialExpressionNormalize")));
+		ExpressionMap.Add(TEXT("VertexNormalWS"), FindFirstObject<UClass>(TEXT("MaterialExpressionVertexNormalWS")));
+		ExpressionMap.Add(TEXT("PixelNormalWS"), FindFirstObject<UClass>(TEXT("MaterialExpressionPixelNormalWS")));
+		ExpressionMap.Add(TEXT("CameraPositionWS"), FindFirstObject<UClass>(TEXT("MaterialExpressionCameraPositionWS")));
+		ExpressionMap.Add(TEXT("WorldPosition"), FindFirstObject<UClass>(TEXT("MaterialExpressionWorldPosition")));
+		ExpressionMap.Add(TEXT("TextureCoordinate"), FindFirstObject<UClass>(TEXT("MaterialExpressionTextureCoordinate")));
+		ExpressionMap.Add(TEXT("Time"), FindFirstObject<UClass>(TEXT("MaterialExpressionTime")));
+		ExpressionMap.Add(TEXT("Panner"), FindFirstObject<UClass>(TEXT("MaterialExpressionPanner")));
+		ExpressionMap.Add(TEXT("VertexColor"), FindFirstObject<UClass>(TEXT("MaterialExpressionVertexColor")));
+		ExpressionMap.Add(TEXT("If"), FindFirstObject<UClass>(TEXT("MaterialExpressionIf")));
+		ExpressionMap.Add(TEXT("StaticSwitch"), FindFirstObject<UClass>(TEXT("MaterialExpressionStaticSwitch")));
+		ExpressionMap.Add(TEXT("StaticBool"), FindFirstObject<UClass>(TEXT("MaterialExpressionStaticBool")));
+		ExpressionMap.Add(TEXT("StaticBoolParameter"), FindFirstObject<UClass>(TEXT("MaterialExpressionStaticBoolParameter")));
+		ExpressionMap.Add(TEXT("CurveAtlasRowParameter"), FindFirstObject<UClass>(TEXT("MaterialExpressionCurveAtlasRowParameter")));
+		// Remove nulls (some classes might not exist in this UE version)
+		TArray<FString> NullKeys;
+		for (auto& Pair : ExpressionMap) { if (!Pair.Value) NullKeys.Add(Pair.Key); }
+		for (auto& Key : NullKeys) { ExpressionMap.Remove(Key); }
 	}
 
 	UClass** FoundClass = ExpressionMap.Find(ExpressionType);
@@ -433,6 +482,34 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleAddMaterialExpression(
 		else if (UMaterialExpressionVectorParameter* VecParam = Cast<UMaterialExpressionVectorParameter>(NewExpression))
 		{
 			VecParam->DefaultValue = Color;
+		}
+	}
+
+	// Set texture for TextureSample and TextureObjectParameter nodes
+	FString TexturePath;
+	if (Params->TryGetStringField(TEXT("texture_path"), TexturePath))
+	{
+		UTexture* Texture = LoadObject<UTexture>(nullptr, *TexturePath);
+		if (!Texture)
+		{
+			// Try with asset suffix
+			FString FullPath = TexturePath + TEXT(".") + FPaths::GetBaseFilename(TexturePath);
+			Texture = LoadObject<UTexture>(nullptr, *FullPath);
+		}
+		if (Texture)
+		{
+			if (UMaterialExpressionTextureSample* TexSample = Cast<UMaterialExpressionTextureSample>(NewExpression))
+			{
+				TexSample->Texture = Texture;
+			}
+			else if (UMaterialExpressionTextureObjectParameter* TexObjParam = Cast<UMaterialExpressionTextureObjectParameter>(NewExpression))
+			{
+				TexObjParam->Texture = Texture;
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("AddMaterialExpression - Texture not found: %s (expression created without texture)"), *TexturePath);
 		}
 	}
 
@@ -635,4 +712,166 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleRecompileMaterial(cons
 	UMaterialEditingLibrary::RecompileMaterial(Material);
 
 	return FUnrealMCPCommonUtils::CreateSuccessResponse();
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialExpressionProperty(const TSharedPtr<FJsonObject>& Params)
+{
+	FString MaterialPath;
+	if (!Params->TryGetStringField(TEXT("material_name"), MaterialPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_name' parameter"));
+	}
+
+	int32 ExpressionIndex;
+	if (!Params->TryGetNumberField(TEXT("expression_index"), ExpressionIndex))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'expression_index' parameter"));
+	}
+
+	FString PropertyName;
+	if (!Params->TryGetStringField(TEXT("property_name"), PropertyName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_name' parameter"));
+	}
+
+	// property_value is required but can be string, number, bool, or array
+	if (!Params->HasField(TEXT("property_value")))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_value' parameter"));
+	}
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material)
+	{
+		FString AssetPath = MaterialPath + TEXT(".") + FPaths::GetBaseFilename(MaterialPath);
+		Material = LoadObject<UMaterial>(nullptr, *AssetPath);
+	}
+	if (!Material)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
+	}
+
+	auto Expressions = Material->GetExpressions();
+	if (ExpressionIndex < 0 || ExpressionIndex >= Expressions.Num())
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Expression index %d out of range (0-%d)"), ExpressionIndex, Expressions.Num() - 1));
+	}
+
+	UMaterialExpression* Expression = Expressions[ExpressionIndex];
+	TSharedPtr<FJsonValue> JsonValue = Params->TryGetField(TEXT("property_value"));
+
+	// Try to set using the generic property setter first
+	FString ErrorMessage;
+	bool bSuccess = FUnrealMCPCommonUtils::SetObjectProperty(Expression, PropertyName, JsonValue, ErrorMessage);
+
+	if (!bSuccess)
+	{
+		// If generic setter fails, try specialized handling for common cases
+		FProperty* Property = FindFProperty<FProperty>(Expression->GetClass(), *PropertyName);
+		if (!Property)
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+				TEXT("Property '%s' not found on expression '%s' (type: %s)"),
+				*PropertyName, *Expression->GetName(), *Expression->GetClass()->GetName()));
+		}
+
+		// Handle object reference properties (textures, curves, atlases, etc.)
+		if (FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(Property))
+		{
+			FString ObjectPath = JsonValue->AsString();
+			UObject* Object = LoadObject<UObject>(nullptr, *ObjectPath);
+			if (!Object)
+			{
+				FString FullPath = ObjectPath + TEXT(".") + FPaths::GetBaseFilename(ObjectPath);
+				Object = LoadObject<UObject>(nullptr, *FullPath);
+			}
+			if (Object)
+			{
+				ObjProp->SetObjectPropertyValue(Property->ContainerPtrToValuePtr<void>(Expression), Object);
+				bSuccess = true;
+			}
+			else
+			{
+				return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+					TEXT("Could not load object at path: %s"), *ObjectPath));
+			}
+		}
+		else
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+				TEXT("Failed to set property '%s': %s"), *PropertyName, *ErrorMessage));
+		}
+	}
+
+	if (bSuccess)
+	{
+		Expression->Modify();
+		Material->MarkPackageDirty();
+
+		TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+		ResultObj->SetStringField(TEXT("expression"), Expression->GetName());
+		ResultObj->SetStringField(TEXT("expression_class"), Expression->GetClass()->GetName());
+		ResultObj->SetNumberField(TEXT("expression_index"), ExpressionIndex);
+		ResultObj->SetStringField(TEXT("property"), PropertyName);
+		ResultObj->SetBoolField(TEXT("success"), true);
+		return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+	}
+
+	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+		TEXT("Failed to set property '%s' on expression"), *PropertyName));
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleGetMaterialExpressions(const TSharedPtr<FJsonObject>& Params)
+{
+	FString MaterialPath;
+	if (!Params->TryGetStringField(TEXT("material_name"), MaterialPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_name' parameter"));
+	}
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material)
+	{
+		FString AssetPath = MaterialPath + TEXT(".") + FPaths::GetBaseFilename(MaterialPath);
+		Material = LoadObject<UMaterial>(nullptr, *AssetPath);
+	}
+	if (!Material)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
+	}
+
+	auto Expressions = Material->GetExpressions();
+	TArray<TSharedPtr<FJsonValue>> ExpressionArray;
+
+	for (int32 i = 0; i < Expressions.Num(); ++i)
+	{
+		UMaterialExpression* Expr = Expressions[i];
+		TSharedPtr<FJsonObject> ExprObj = MakeShared<FJsonObject>();
+		ExprObj->SetNumberField(TEXT("index"), i);
+		ExprObj->SetStringField(TEXT("name"), Expr->GetName());
+		ExprObj->SetStringField(TEXT("class"), Expr->GetClass()->GetName());
+
+		// Include parameter name if applicable
+		if (UMaterialExpressionParameter* ParamExpr = Cast<UMaterialExpressionParameter>(Expr))
+		{
+			ExprObj->SetStringField(TEXT("parameter_name"), ParamExpr->ParameterName.ToString());
+		}
+
+		// Include description/caption
+		TArray<FString> Captions;
+		Expr->GetCaption(Captions);
+		if (Captions.Num() > 0)
+		{
+			ExprObj->SetStringField(TEXT("caption"), Captions[0]);
+		}
+
+		ExpressionArray.Add(MakeShared<FJsonValueObject>(ExprObj));
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("material"), MaterialPath);
+	ResultObj->SetNumberField(TEXT("expression_count"), Expressions.Num());
+	ResultObj->SetArrayField(TEXT("expressions"), ExpressionArray);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
 }

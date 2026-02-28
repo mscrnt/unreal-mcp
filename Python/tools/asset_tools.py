@@ -223,4 +223,23 @@ def register_asset_tools(mcp: FastMCP):
             logger.error(f"Error saving asset: {e}")
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def open_asset(ctx: Context, path: str) -> Dict[str, Any]:
+        """
+        Open an asset in the Unreal Editor (e.g. open a Blueprint in the Blueprint Editor).
+
+        Args:
+            path: Content path of the asset to open (e.g. "/Game/Blueprints/BP_Player")
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("open_asset", {"path": path})
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error opening asset: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Asset tools registered successfully")

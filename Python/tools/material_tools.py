@@ -167,7 +167,8 @@ def register_material_tools(mcp: FastMCP):
         position: List[float] = None,
         param_name: str = None,
         value: float = None,
-        color: List[float] = None
+        color: List[float] = None,
+        texture_path: str = None
     ) -> Dict[str, Any]:
         """
         Add a material expression node to a material's graph.
@@ -175,11 +176,18 @@ def register_material_tools(mcp: FastMCP):
         Args:
             material_name: Path to the material
             expression_type: Type of expression (Constant, Constant3Vector, Constant4Vector,
-                TextureSample, ScalarParameter, VectorParameter, Multiply, Add, Lerp)
+                TextureSample, ScalarParameter, VectorParameter, Multiply, Add, Lerp,
+                Subtract, Divide, Power, Abs, Min, Max, Clamp, Saturate, OneMinus,
+                Dot, CrossProduct, SmoothStep, Step, Append, ComponentMask, Fresnel,
+                Normalize, VertexNormalWS, PixelNormalWS, CameraPositionWS, WorldPosition,
+                TextureCoordinate, Time, Panner, VertexColor, If, StaticSwitch, StaticBool,
+                StaticBoolParameter, TextureObjectParameter, CurveAtlasRowParameter).
+                Any UMaterialExpression subclass name also works (without the UMaterialExpression prefix).
             position: Optional [X, Y] position in the graph
             param_name: Optional parameter name (for ScalarParameter, VectorParameter)
             value: Optional default value (for Constant, ScalarParameter)
             color: Optional [R,G,B] or [R,G,B,A] color (for vector constants/parameters)
+            texture_path: Optional content path to a texture asset (for TextureSample, TextureObjectParameter)
 
         Returns:
             Dict with expression_name and expression_index
@@ -201,6 +209,8 @@ def register_material_tools(mcp: FastMCP):
                 params["value"] = value
             if color is not None:
                 params["color"] = color
+            if texture_path is not None:
+                params["texture_path"] = texture_path
             response = unreal.send_command("add_material_expression", params)
             return response or {}
         except Exception as e:
@@ -324,6 +334,76 @@ def register_material_tools(mcp: FastMCP):
             return response or {}
         except Exception as e:
             logger.error(f"Error recompiling material: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_material_expression_property(
+        ctx: Context,
+        material_name: str,
+        expression_index: int,
+        property_name: str,
+        property_value: str
+    ) -> Dict[str, Any]:
+        """
+        Set a property on a material expression node. Use this to configure expression
+        nodes after creation — for example, setting the Atlas/Curve on a CurveAtlasRowParameter,
+        the Texture on a TextureSample, or R/G/B/A mask flags on a ComponentMask.
+
+        For object reference properties (textures, curve atlases, etc.), pass the content path
+        as the value (e.g. "/Game/Textures/MyTexture").
+
+        Args:
+            material_name: Path to the material
+            expression_index: Index of the expression (from add_material_expression result)
+            property_name: Name of the property to set (e.g. "Texture", "Atlas", "Curve", "R", "G", "B", "A")
+            property_value: Value to set the property to (string, number, or object path)
+
+        Returns:
+            Dict containing response from Unreal with operation status
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("set_material_expression_property", {
+                "material_name": material_name,
+                "expression_index": expression_index,
+                "property_name": property_name,
+                "property_value": property_value
+            })
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error setting material expression property: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def get_material_expressions(
+        ctx: Context,
+        material_name: str
+    ) -> Dict[str, Any]:
+        """
+        Get all expression nodes in a material's graph. Returns each expression's
+        index, name, class, and caption. Useful for inspecting a material before
+        connecting or modifying expressions.
+
+        Args:
+            material_name: Path to the material
+
+        Returns:
+            Dict with expression_count and expressions array
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("get_material_expressions", {
+                "material_name": material_name
+            })
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error getting material expressions: {e}")
             return {"success": False, "message": str(e)}
 
     logger.info("Material tools registered successfully")

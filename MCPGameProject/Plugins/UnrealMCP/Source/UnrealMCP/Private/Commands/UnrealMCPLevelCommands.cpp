@@ -160,8 +160,60 @@ TSharedPtr<FJsonObject> FUnrealMCPLevelCommands::HandleLoadLevel(const TSharedPt
 
 	if (!bLoaded)
 	{
+		// Final fallback: try FEditorFileUtils::LoadMap which handles more path formats
+		// This is what the Python unreal.EditorLoadingAndSavingUtils.load_map uses internally
+		FString ResolvedPath = LevelPath;
+		// Ensure proper content path format
+		if (!ResolvedPath.StartsWith(TEXT("/")) && !ResolvedPath.Contains(TEXT(":")))
+		{
+			ResolvedPath = TEXT("/Game/") + ResolvedPath;
+		}
+		// Remove trailing extension if present
+		if (ResolvedPath.EndsWith(TEXT(".umap")))
+		{
+			ResolvedPath = FPaths::GetBaseFilename(ResolvedPath, false);
+		}
+		// Try asset registry one more time with partial name matching
+		FAssetRegistryModule& AssetReg2 = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		IAssetRegistry& AR2 = AssetReg2.Get();
+		TArray<FAssetData> AllMaps;
+		AR2.GetAssetsByClass(FTopLevelAssetPath(TEXT("/Script/Engine"), TEXT("World")), AllMaps);
+		FString SearchBase = FPaths::GetBaseFilename(LevelPath);
+		for (const FAssetData& Map : AllMaps)
+		{
+			// Match by substring — covers cases like "Gameplay_Map1_Level" when user passes partial path
+			if (Map.PackageName.ToString().Contains(SearchBase) || Map.AssetName.ToString().Contains(SearchBase))
+			{
+				FString PkgPath = Map.PackageName.ToString();
+				bLoaded = LevelEditorSubsystem->LoadLevel(PkgPath);
+				if (bLoaded)
+				{
+					LevelPath = PkgPath;
+					break;
+				}
+			}
+		}
+	}
+
+	if (!bLoaded)
+	{
+		// List available maps to help the user find the right path
+		FAssetRegistryModule& AssetRegFinal = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		TArray<FAssetData> AvailMaps;
+		AssetRegFinal.Get().GetAssetsByClass(FTopLevelAssetPath(TEXT("/Script/Engine"), TEXT("World")), AvailMaps);
+		FString MapList;
+		int32 Count = 0;
+		for (const FAssetData& Map : AvailMaps)
+		{
+			if (Count++ < 20)
+			{
+				MapList += TEXT("\n  ") + Map.PackageName.ToString();
+			}
+		}
+		if (Count > 20) MapList += FString::Printf(TEXT("\n  ... and %d more"), Count - 20);
+
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
-			TEXT("Failed to load level: %s (tried exact path, /Game/ prefix, and asset registry search)"), *LevelPath));
+			TEXT("Failed to load level: %s. Available maps:%s"), *LevelPath, *MapList));
 	}
 
 	// Verify the level actually changed by checking the new world

@@ -48,4 +48,11 @@ private:
     // PIE / RL tools
     TSharedPtr<FJsonObject> HandleAddMovementInput(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandlePawnAction(const TSharedPtr<FJsonObject>& Params);
-}; 
+
+    // Editor Utility Subsystem
+    TSharedPtr<FJsonObject> HandleRunEditorUtility(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSpawnEditorUtilityTab(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleCloseEditorUtilityTab(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleDoesEditorUtilityTabExist(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleFindEditorUtilityWidget(const TSharedPtr<FJsonObject>& Params);
+};
