@@ -12,7 +12,7 @@
 
 This project enables AI assistant clients like Cursor, Windsurf, Claude Desktop, and Claude Code to control Unreal Engine through natural language using the Model Context Protocol (MCP).
 
-> **Fork note:** This is a fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with significant expansions — from ~35 tools to **107 tools** — covering materials, assets, levels, animation blueprints, PIE testing, RL agent support, visual feedback via screenshots, Editor Utility Widgets, and more.
+> **Fork note:** This is a fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with significant expansions — from ~35 tools to **110 tools** — covering materials, assets, levels, animation blueprints, PIE testing, RL agent support, visual feedback via screenshots, Editor Utility Widgets, and more.
 
 ## Warning: Experimental Status
 
@@ -25,7 +25,7 @@ This project is currently in an **EXPERIMENTAL** state. The API, functionality, 
 
 ## Overview
 
-The Unreal MCP integration provides **107 tools** across 9 categories for controlling Unreal Engine through natural language:
+The Unreal MCP integration provides **110 tools** across 10 categories for controlling Unreal Engine through natural language:
 
 | Category | Tools | Capabilities |
 |----------|:-----:|-------------|
@@ -38,6 +38,7 @@ The Unreal MCP integration provides **107 tools** across 9 categories for contro
 | **Project** | 7 | Game mode, default maps, Enhanced Input actions and mapping contexts, project settings (read/write) |
 | **UMG Widgets** | 6 | Create widget blueprints, text blocks, buttons, event bindings, viewport display, property bindings |
 | **Animation** | 7 | Create AnimBPs, state machines, states, transitions, animation assignment, transition rules |
+| **Process** | 3 | Stop/start Unreal Editor process, check editor status with MCP connection readiness |
 
 All capabilities are accessible through natural language commands via AI assistants.
 
@@ -58,6 +59,7 @@ Python MCP Server (FastMCP)           Port 55557 (TCP/JSON)
   tools/project_tools.py               +-- UnrealMCPLevelCommands
   tools/umg_tools.py                   +-- UnrealMCPMaterialCommands
   tools/anim_tools.py                  +-- UnrealMCPAssetCommands
+  tools/process_tools.py              +-- UnrealMCPGameplayCommands
                                         +-- UnrealMCPGameplayCommands
                                         +-- UnrealMCPAnimBlueprintCommands
                                         +-- UnrealMCPCommonUtils (shared)
@@ -116,6 +118,7 @@ Python/                                  # Python MCP server
     project_tools.py                     # Project settings, Enhanced Input
     umg_tools.py                         # UMG Widget Blueprints
     anim_tools.py                        # Animation Blueprints
+    process_tools.py                     # Editor process lifecycle (stop/start)
 
 Docs/                                    # Documentation
 ```
@@ -341,6 +344,14 @@ Add the following to your MCP configuration:
 | `add_anim_transition` | Add a transition between states |
 | `get_anim_blueprint_info` | Get detailed AnimBP information |
 | `set_anim_transition_rule` | Set a condition rule on a transition |
+
+### Process Tools (3)
+
+| Tool | Description |
+|------|-------------|
+| `stop_unreal_editor` | Stop the Unreal Editor process (optionally saves first), caches paths for restart |
+| `start_unreal_editor` | Launch Unreal Editor with auto-discovery of editor and project paths |
+| `is_unreal_editor_running` | Check if the editor is running and MCP TCP connection is available |
 
 ## PIE and RL Training Support
 

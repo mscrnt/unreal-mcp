@@ -275,6 +275,7 @@ from tools.level_tools import register_level_tools
 from tools.material_tools import register_material_tools
 from tools.asset_tools import register_asset_tools
 from tools.anim_tools import register_anim_tools
+from tools.process_tools import register_process_tools
 
 # Register tools
 register_editor_tools(mcp)
@@ -286,6 +287,7 @@ register_level_tools(mcp)
 register_material_tools(mcp)
 register_asset_tools(mcp)
 register_anim_tools(mcp)
+register_process_tools(mcp)
 
 @mcp.prompt()
 def info():
