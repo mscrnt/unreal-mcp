@@ -3,13 +3,23 @@ Asset Tools for Unreal MCP.
 
 This module provides tools for managing content assets: listing, finding,
 duplicating, deleting, renaming, importing, and saving assets.
+
+Read operations (list_assets, find_asset, does_asset_exist) are cached with a
+30-second TTL. Any write operation invalidates the asset cache so the next read
+reflects the change.
 """
 
 import logging
 from typing import Dict, List, Any, Optional
 from mcp.server.fastmcp import FastMCP, Context
+from mcp_cache import cache_get, cache_set, cache_invalidate, TTL_ASSETS
 
 logger = logging.getLogger("UnrealMCP")
+
+
+def _invalidate_assets() -> None:
+    """Invalidate all cached asset queries."""
+    cache_invalidate("assets:")
 
 
 def register_asset_tools(mcp: FastMCP):
@@ -30,6 +40,11 @@ def register_asset_tools(mcp: FastMCP):
             class_filter: Optional class name to filter by (e.g. "Blueprint", "Material")
             recursive: Whether to search subdirectories (default True)
         """
+        cache_key = f"assets:list:{path}:{class_filter}:{recursive}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         from unreal_mcp_server import get_unreal_connection
         try:
             unreal = get_unreal_connection()
@@ -38,8 +53,10 @@ def register_asset_tools(mcp: FastMCP):
             params = {"path": path, "recursive": recursive}
             if class_filter:
                 params["class_filter"] = class_filter
-            response = unreal.send_command("list_assets", params)
-            return response or {}
+            response = unreal.send_command("list_assets", params) or {}
+            if response.get("status") == "success":
+                cache_set(cache_key, response, TTL_ASSETS)
+            return response
         except Exception as e:
             logger.error(f"Error listing assets: {e}")
             return {"success": False, "message": str(e)}
@@ -52,13 +69,20 @@ def register_asset_tools(mcp: FastMCP):
         Args:
             name: Name or partial name to search for
         """
+        cache_key = f"assets:find:{name}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         from unreal_mcp_server import get_unreal_connection
         try:
             unreal = get_unreal_connection()
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("find_asset", {"name": name})
-            return response or {}
+            response = unreal.send_command("find_asset", {"name": name}) or {}
+            if response.get("status") == "success":
+                cache_set(cache_key, response, TTL_ASSETS)
+            return response
         except Exception as e:
             logger.error(f"Error finding asset: {e}")
             return {"success": False, "message": str(e)}
@@ -71,13 +95,20 @@ def register_asset_tools(mcp: FastMCP):
         Args:
             path: Full content path of the asset (e.g. "/Game/Materials/M_Red")
         """
+        cache_key = f"assets:exists:{path}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         from unreal_mcp_server import get_unreal_connection
         try:
             unreal = get_unreal_connection()
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("does_asset_exist", {"path": path})
-            return response or {}
+            response = unreal.send_command("does_asset_exist", {"path": path}) or {}
+            if response.get("status") == "success":
+                cache_set(cache_key, response, TTL_ASSETS)
+            return response
         except Exception as e:
             logger.error(f"Error checking asset existence: {e}")
             return {"success": False, "message": str(e)}
@@ -103,8 +134,10 @@ def register_asset_tools(mcp: FastMCP):
             response = unreal.send_command("duplicate_asset", {
                 "source_path": source_path,
                 "dest_path": dest_path
-            })
-            return response or {}
+            }) or {}
+            if response.get("status") == "success":
+                _invalidate_assets()
+            return response
         except Exception as e:
             logger.error(f"Error duplicating asset: {e}")
             return {"success": False, "message": str(e)}
@@ -123,8 +156,10 @@ def register_asset_tools(mcp: FastMCP):
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             # Use delete_asset_file to avoid collision with editor_tools delete_actor
-            response = unreal.send_command("delete_asset_file", {"path": path})
-            return response or {}
+            response = unreal.send_command("delete_asset_file", {"path": path}) or {}
+            if response.get("status") == "success":
+                _invalidate_assets()
+            return response
         except Exception as e:
             logger.error(f"Error deleting asset: {e}")
             return {"success": False, "message": str(e)}
@@ -150,8 +185,10 @@ def register_asset_tools(mcp: FastMCP):
             response = unreal.send_command("rename_asset", {
                 "source_path": source_path,
                 "dest_path": dest_path
-            })
-            return response or {}
+            }) or {}
+            if response.get("status") == "success":
+                _invalidate_assets()
+            return response
         except Exception as e:
             logger.error(f"Error renaming asset: {e}")
             return {"success": False, "message": str(e)}
@@ -169,8 +206,10 @@ def register_asset_tools(mcp: FastMCP):
             unreal = get_unreal_connection()
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("create_folder", {"path": path})
-            return response or {}
+            response = unreal.send_command("create_folder", {"path": path}) or {}
+            if response.get("status") == "success":
+                _invalidate_assets()
+            return response
         except Exception as e:
             logger.error(f"Error creating folder: {e}")
             return {"success": False, "message": str(e)}
@@ -198,8 +237,10 @@ def register_asset_tools(mcp: FastMCP):
             params = {"source_file": source_file, "dest_path": dest_path}
             if dest_name:
                 params["dest_name"] = dest_name
-            response = unreal.send_command("import_asset", params)
-            return response or {}
+            response = unreal.send_command("import_asset", params) or {}
+            if response.get("status") == "success":
+                _invalidate_assets()
+            return response
         except Exception as e:
             logger.error(f"Error importing asset: {e}")
             return {"success": False, "message": str(e)}

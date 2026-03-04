@@ -322,4 +322,33 @@ def register_process_tools(mcp: FastMCP):
             "cached_project_path": _cached_project_path
         }
 
+    @mcp.tool()
+    def clear_mcp_cache(ctx: Context) -> Dict[str, Any]:
+        """
+        Clear the in-memory MCP result cache immediately.
+
+        Use this when you have made changes outside of MCP (e.g. manually creating
+        or deleting assets in the Unreal Editor) and want to ensure the next tool
+        call returns fresh data rather than a cached result.
+
+        Also returns cache hit/miss statistics from the current session.
+        """
+        from mcp_cache import cache_clear, cache_stats
+        stats_before = cache_stats()
+        removed = cache_clear()
+        return {
+            "success": True,
+            "entries_cleared": removed,
+            "session_stats": stats_before
+        }
+
+    @mcp.tool()
+    def get_mcp_cache_stats(ctx: Context) -> Dict[str, Any]:
+        """
+        Return cache hit/miss statistics and current entry counts.
+        Useful for understanding whether caching is helping in a session.
+        """
+        from mcp_cache import cache_stats
+        return cache_stats()
+
     logger.info("Process tools registered successfully")

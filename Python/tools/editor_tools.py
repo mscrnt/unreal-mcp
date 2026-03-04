@@ -11,6 +11,7 @@ import tempfile
 from typing import Dict, List, Any, Optional, Union
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.fastmcp.utilities.types import Image
+from mcp_cache import cache_get, cache_set, cache_invalidate, TTL_ACTORS
 
 # Get logger
 logger = logging.getLogger("UnrealMCP")
@@ -21,36 +22,43 @@ def register_editor_tools(mcp: FastMCP):
     @mcp.tool()
     def get_actors_in_level(ctx: Context) -> List[Dict[str, Any]]:
         """Get a list of all actors in the current level."""
+        cache_key = "actors:all"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         from unreal_mcp_server import get_unreal_connection
-        
+
         try:
             unreal = get_unreal_connection()
             if not unreal:
                 logger.warning("Failed to connect to Unreal Engine")
                 return []
-                
+
             response = unreal.send_command("get_actors_in_level", {})
-            
+
             if not response:
                 logger.warning("No response from Unreal Engine")
                 return []
-                
+
             # Log the complete response for debugging
             logger.info(f"Complete response from Unreal: {response}")
-            
+
             # Check response format
+            actors = None
             if "result" in response and "actors" in response["result"]:
                 actors = response["result"]["actors"]
-                logger.info(f"Found {len(actors)} actors in level")
-                return actors
             elif "actors" in response:
                 actors = response["actors"]
+
+            if actors is not None:
                 logger.info(f"Found {len(actors)} actors in level")
+                cache_set(cache_key, actors, TTL_ACTORS)
                 return actors
-                
+
             logger.warning(f"Unexpected response format: {response}")
             return []
-            
+
         except Exception as e:
             logger.error(f"Error getting actors: {e}")
             return []
@@ -58,24 +66,31 @@ def register_editor_tools(mcp: FastMCP):
     @mcp.tool()
     def find_actors_by_name(ctx: Context, pattern: str) -> List[str]:
         """Find actors by name pattern."""
+        cache_key = f"actors:by_name:{pattern}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return cached
+
         from unreal_mcp_server import get_unreal_connection
-        
+
         try:
             unreal = get_unreal_connection()
             if not unreal:
                 logger.warning("Failed to connect to Unreal Engine")
                 return []
-                
+
             response = unreal.send_command("find_actors_by_name", {
                 "pattern": pattern
             })
-            
+
             if not response:
                 return []
 
             # Response may be wrapped in "result"
             data = response.get("result", response)
-            return data.get("actors", [])
+            actors = data.get("actors", [])
+            cache_set(cache_key, actors, TTL_ACTORS)
+            return actors
 
         except Exception as e:
             logger.error(f"Error finding actors: {e}")
@@ -141,30 +156,31 @@ def register_editor_tools(mcp: FastMCP):
                 error_message = response.get("error", "Unknown error")
                 logger.error(f"Error creating actor: {error_message}")
                 return {"success": False, "message": error_message}
-            
+
+            cache_invalidate("actors:")
             return response
-            
+
         except Exception as e:
             error_msg = f"Error creating actor: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
-    
+
     @mcp.tool()
     def delete_actor(ctx: Context, name: str) -> Dict[str, Any]:
         """Delete an actor by name."""
         from unreal_mcp_server import get_unreal_connection
-        
+
         try:
             unreal = get_unreal_connection()
             if not unreal:
                 logger.error("Failed to connect to Unreal Engine")
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
-                
-            response = unreal.send_command("delete_actor", {
-                "name": name
-            })
-            return response or {}
-            
+
+            response = unreal.send_command("delete_actor", {"name": name}) or {}
+            if response.get("status") == "success":
+                cache_invalidate("actors:")
+            return response
+
         except Exception as e:
             logger.error(f"Error deleting actor: {e}")
             return {}
@@ -365,8 +381,10 @@ def register_editor_tools(mcp: FastMCP):
                 return {"success": False, "message": "No response from Unreal Engine"}
             
             logger.info(f"Spawn blueprint actor response: {response}")
+            if response.get("status") == "success":
+                cache_invalidate("actors:")
             return response
-            
+
         except Exception as e:
             error_msg = f"Error spawning blueprint actor: {e}"
             logger.error(error_msg)
@@ -432,8 +450,10 @@ def register_editor_tools(mcp: FastMCP):
                 params["new_name"] = new_name
             if location is not None:
                 params["location"] = location
-            response = unreal.send_command("duplicate_actor", params)
-            return response or {}
+            response = unreal.send_command("duplicate_actor", params) or {}
+            if response.get("status") == "success":
+                cache_invalidate("actors:")
+            return response
         except Exception as e:
             return {"success": False, "message": str(e)}
 
