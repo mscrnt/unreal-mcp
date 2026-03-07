@@ -4,7 +4,7 @@
 <span style="color: #555555">unreal-mcp</span>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Unreal Engine](https://img.shields.io/badge/Unreal%20Engine-5.5%2B-orange)](https://www.unrealengine.com)
+[![Unreal Engine](https://img.shields.io/badge/Unreal%20Engine-5.6%2B-orange)](https://www.unrealengine.com)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-yellow)](https://www.python.org)
 [![Status](https://img.shields.io/badge/Status-Experimental-red)](https://github.com/mscrnt/unreal-mcp)
 
@@ -12,7 +12,7 @@
 
 This project enables AI assistant clients like Cursor, Windsurf, Claude Desktop, and Claude Code to control Unreal Engine through natural language using the Model Context Protocol (MCP).
 
-> **Fork note:** This is a fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with significant expansions — from ~35 tools to **110 tools** — covering materials, assets, levels, animation blueprints, PIE testing, RL agent support, visual feedback via screenshots, Editor Utility Widgets, and more.
+> **Fork note:** This is a fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with significant expansions — from ~35 tools to **102 tools** — covering materials, assets, levels, animation blueprints, PIE testing, RL agent support, visual feedback via screenshots, Editor Utility Widgets, dynamic tool scopes, Docker/SSE deployment, and more.
 
 ## Warning: Experimental Status
 
@@ -25,20 +25,20 @@ This project is currently in an **EXPERIMENTAL** state. The API, functionality, 
 
 ## Overview
 
-The Unreal MCP integration provides **110 tools** across 10 categories for controlling Unreal Engine through natural language:
+The Unreal MCP integration provides **102 tools** across 10 categories for controlling Unreal Engine through natural language:
 
 | Category | Tools | Capabilities |
 |----------|:-----:|-------------|
-| **Editor** | 26 | Actor CRUD, transforms, properties, selection, duplication, viewport camera, material assignment (StaticMesh + SkeletalMesh), actor tags, PIE movement input, pawn actions (jump/crouch/launch), viewport screenshots with grid sequences, Editor Utility Widget tab management |
+| **Editor** | 24 | Actor CRUD, transforms, properties, selection, duplication, viewport camera, material assignment (StaticMesh + SkeletalMesh), actor tags, PIE movement input, pawn actions (jump/crouch/launch), viewport screenshots with grid sequences, Editor Utility Widget tab management |
 | **Blueprints** | 9 | Create Blueprint classes, add/configure/reparent/remove components, set properties, physics, compile with error reporting |
-| **Blueprint Nodes** | 21 | Events, functions, branches, loops, delays, timers, custom events, math ops, variables (get/set/add/remove/change type), pin defaults, self/component references, node connections, node deletion |
-| **Level** | 11 | Create/load/save levels, Play-In-Editor (start/stop/query), console commands, build lighting, world settings |
-| **Materials** | 12 | Create materials and instances, scalar/vector/texture parameters, 30+ material expression types, expression property editing, node connections, apply to actors, recompile |
+| **Blueprint Nodes** | 16 | Events, functions, flow control (branch/loop/delay/timer/print), custom events, math ops, variables (get/set/add/remove/change type), pin defaults, self/component references, node connections, node deletion |
+| **Level** | 8 | Create/load/save levels, Play-In-Editor (start/stop/query), console commands, build lighting, world settings |
+| **Materials** | 10 | Create materials and instances, scalar/vector/texture parameters, 30+ material expression types, expression property editing, node connections, apply to actors, recompile |
 | **Assets** | 10 | List/find/duplicate/delete/rename/import/save/open assets, create folders, existence checks |
 | **Project** | 7 | Game mode, default maps, Enhanced Input actions and mapping contexts, project settings (read/write) |
 | **UMG Widgets** | 6 | Create widget blueprints, text blocks, buttons, event bindings, viewport display, property bindings |
 | **Animation** | 7 | Create AnimBPs, state machines, states, transitions, animation assignment, transition rules |
-| **Process** | 3 | Stop/start Unreal Editor process, check editor status with MCP connection readiness |
+| **Process** | 5 | Stop/start Unreal Editor process, check editor status, MCP result cache management |
 
 All capabilities are accessible through natural language commands via AI assistants.
 
@@ -47,26 +47,30 @@ All capabilities are accessible through natural language commands via AI assista
 ```
 AI Client (Claude/Cursor/Windsurf)
         |
-        | stdio (MCP protocol)
+        | stdio (local) or SSE (Docker/remote)
         v
-Python MCP Server (FastMCP)           Port 55557 (TCP/JSON)
-  tools/editor_tools.py        <---->  C++ Plugin (UnrealMCP)
-  tools/blueprint_tools.py               |
-  tools/node_tools.py                    +-- UnrealMCPBridge (router)
-  tools/level_tools.py                   +-- UnrealMCPEditorCommands
-  tools/material_tools.py               +-- UnrealMCPBlueprintCommands
-  tools/asset_tools.py                  +-- UnrealMCPBlueprintNodeCommands
-  tools/project_tools.py               +-- UnrealMCPLevelCommands
-  tools/umg_tools.py                   +-- UnrealMCPMaterialCommands
-  tools/anim_tools.py                  +-- UnrealMCPAssetCommands
-  tools/process_tools.py              +-- UnrealMCPGameplayCommands
-                                        +-- UnrealMCPGameplayCommands
-                                        +-- UnrealMCPAnimBlueprintCommands
-                                        +-- UnrealMCPCommonUtils (shared)
+Python MCP Server (FastMCP 3.x)         Port 55557 (TCP/JSON)
+  tools/editor_tools.py           <---->  C++ Plugin (UnrealMCP)
+  tools/blueprint_tools.py                  |
+  tools/node_tools.py                       +-- UnrealMCPBridge (router)
+  tools/level_tools.py                      +-- UnrealMCPEditorCommands
+  tools/material_tools.py                  +-- UnrealMCPBlueprintCommands
+  tools/asset_tools.py                     +-- UnrealMCPBlueprintNodeCommands
+  tools/project_tools.py                  +-- UnrealMCPLevelCommands
+  tools/umg_tools.py                      +-- UnrealMCPMaterialCommands
+  tools/anim_tools.py                     +-- UnrealMCPAssetCommands
+  tools/process_tools.py                 +-- UnrealMCPGameplayCommands
+  mcp_scopes.py (scope manager)           +-- UnrealMCPAnimBlueprintCommands
+  mcp_cache.py (TTL cache)                +-- UnrealMCPCommonUtils (shared)
 ```
 
-- **C++ Plugin**: Native TCP server running inside Unreal Editor, executes all UE operations on the game thread
-- **Python Server**: FastMCP-based stdio server that translates MCP tool calls to JSON commands over TCP
+**Transports:**
+- **stdio** (default) — AI client spawns the Python server as a subprocess. Best for local development.
+- **SSE** (Docker) — Python server runs in a Docker container with HTTP/SSE transport. Best for remote or isolated environments.
+
+**Key components:**
+- **C++ Plugin**: Native TCP server running inside Unreal Editor (binds to `0.0.0.0:55557`), executes all UE operations on the game thread
+- **Python Server**: FastMCP-based server that translates MCP tool calls to JSON commands over TCP
 - **JSON Protocol**: `{"type": "command_name", "params": {...}}` / `{"status": "success", "result": {...}}`
 
 ## Components
@@ -84,7 +88,39 @@ Based on the Blank Project with the UnrealMCP plugin pre-configured.
 - Manages TCP socket connections to the C++ plugin
 - Handles command serialization and response parsing
 - Loads and registers tool modules from the `tools/` directory
-- Uses the FastMCP library to implement the Model Context Protocol
+- Uses FastMCP 3.x (`from fastmcp import FastMCP`) for MCP protocol implementation
+- Supports dual transport: stdio (default) or SSE via `MCP_TRANSPORT` env var
+- Configurable UE connection via `UNREAL_HOST` / `UNREAL_PORT` env vars
+
+## Tool Scopes
+
+To reduce context window usage, tools are organized into **10 scopes**. Only active scopes appear in the tool listing. By default, 4 scopes are active (~50 tools). Agents can activate additional scopes at runtime as needed.
+
+| Scope | Tools | Default | Description |
+|-------|:-----:|:-------:|-------------|
+| `editor` | 24 | Active | Actor CRUD, viewport, screenshots, editor utilities |
+| `assets` | 10 | Active | Content browser asset management |
+| `level` | 8 | Active | Levels, PIE, console, lighting, world settings |
+| `process` | 5 | Active | Start/stop editor, cache management |
+| `blueprint` | 9 | — | Blueprint creation, components, compile |
+| `blueprint_nodes` | 16 | — | Node graph authoring |
+| `materials` | 10 | — | Material creation, expressions, params |
+| `animation` | 7 | — | AnimBP, state machines, transitions |
+| `umg` | 6 | — | Widget blueprints, buttons, text blocks |
+| `project` | 7 | — | Game mode, input, project settings |
+
+Three always-on tools manage scopes: `activate_tool_scope`, `deactivate_tool_scope`, `list_tool_scopes`.
+
+Default scopes are configured in `Python/tool_scopes.json`.
+
+## Caching
+
+The server includes a TTL-based cache (`mcp_cache.py`) that reduces redundant UE round-trips:
+
+- **Asset queries** (list_assets, find_asset): cached for 30 seconds
+- **Actor queries** (get_actors_in_level, find_actors_by_name): cached for 5 seconds
+- Mutations automatically invalidate related cache entries
+- Cache tools: `clear_mcp_cache` (manual flush), `get_mcp_cache_stats` (hit/miss stats)
 
 ## Directory Structure
 
@@ -108,6 +144,12 @@ MCPGameProject/                          # Example Unreal project
 
 Python/                                  # Python MCP server
   unreal_mcp_server.py                   # Main server entry point
+  mcp_scopes.py                          # Dynamic tool scope manager
+  mcp_cache.py                           # TTL cache for UE queries
+  tool_scopes.json                       # Default scope configuration
+  Dockerfile                             # Docker image for SSE transport
+  .dockerignore
+  pyproject.toml                         # Dependencies (FastMCP 3.x)
   tools/
     editor_tools.py                      # Actor management, viewport, PIE/RL
     blueprint_tools.py                   # Blueprint class creation
@@ -118,7 +160,10 @@ Python/                                  # Python MCP server
     project_tools.py                     # Project settings, Enhanced Input
     umg_tools.py                         # UMG Widget Blueprints
     anim_tools.py                        # Animation Blueprints
-    process_tools.py                     # Editor process lifecycle (stop/start)
+    process_tools.py                     # Editor process lifecycle, cache tools
+
+docker-compose.yml                       # Docker Compose for SSE deployment
+mcp.json                                 # Example MCP client configurations
 
 Docs/                                    # Documentation
 ```
@@ -126,7 +171,7 @@ Docs/                                    # Documentation
 ## Quick Start Guide
 
 ### Prerequisites
-- Unreal Engine 5.5+ (tested on 5.6)
+- Unreal Engine 5.6+ (tested on 5.6.1)
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) (Python package manager)
 - MCP Client (Claude Desktop, Claude Code, Cursor, or Windsurf)
@@ -164,6 +209,8 @@ See [Python/README.md](Python/README.md) for detailed setup instructions.
 
 ### Configuring Your MCP Client
 
+#### Option 1: Local (stdio) — recommended for development
+
 Add the following to your MCP configuration:
 
 ```json
@@ -182,6 +229,26 @@ Add the following to your MCP configuration:
 }
 ```
 
+#### Option 2: Docker (SSE) — for remote or isolated environments
+
+1. Build and start the container:
+   ```bash
+   docker compose up -d
+   ```
+
+2. Add to your MCP configuration:
+   ```json
+   {
+     "mcpServers": {
+       "unrealMCP": {
+         "url": "http://localhost:8000/sse"
+       }
+     }
+   }
+   ```
+
+> **Note**: The Docker container connects to Unreal Editor on the host via `host.docker.internal:55557`. The C++ plugin binds to `0.0.0.0` so it accepts connections from the Docker bridge network.
+
 | MCP Client | Configuration File Location |
 |------------|------------------------------|
 | Claude Desktop | `%USERPROFILE%\.config\claude-desktop\mcp.json` |
@@ -191,7 +258,7 @@ Add the following to your MCP configuration:
 
 ## Tool Reference
 
-### Editor Tools (26)
+### Editor Tools (24)
 
 | Tool | Description |
 |------|-------------|
@@ -217,9 +284,7 @@ Add the following to your MCP configuration:
 | `take_screenshot` | Capture the viewport (game view during PIE, editor otherwise) and return as an image |
 | `take_screenshot_sequence` | Capture N screenshots over time and return as a single grid image |
 | `run_editor_utility` | Run an Editor Utility Blueprint or Widget |
-| `spawn_editor_utility_tab` | Open an Editor Utility Widget as an editor tab |
-| `close_editor_utility_tab` | Close an Editor Utility Widget tab by ID |
-| `does_editor_utility_tab_exist` | Check if an Editor Utility Widget tab is open |
+| `editor_utility_tab` | Manage Editor Utility Widget tabs (action: "spawn", "close", or "exists") |
 | `find_editor_utility_widget` | Find the widget instance from a spawned Editor Utility tab |
 
 ### Blueprint Tools (9)
@@ -236,7 +301,7 @@ Add the following to your MCP configuration:
 | `reparent_blueprint_component` | Reparent (attach) a component to a different parent component |
 | `remove_blueprint_component` | Remove a component from a Blueprint (optionally promotes children) |
 
-### Blueprint Node Tools (21)
+### Blueprint Node Tools (16)
 
 | Tool | Description |
 |------|-------------|
@@ -248,45 +313,35 @@ Add the following to your MCP configuration:
 | `add_blueprint_get_self_component_reference` | Get reference to an owned component |
 | `add_blueprint_self_reference` | Get reference to self (this actor) |
 | `find_blueprint_nodes` | Find nodes by type or event name |
-| `add_blueprint_branch_node` | Add a Branch (if/else) node |
-| `add_blueprint_for_loop_node` | Add a ForLoop macro node |
-| `add_blueprint_delay_node` | Add a Delay node |
-| `add_blueprint_print_string_node` | Add a PrintString node (debugging) |
-| `add_blueprint_set_timer_node` | Add a SetTimerByFunctionName node |
+| `add_blueprint_flow_node` | Add flow control nodes (node_type: "branch", "for_loop", "delay", "print_string", "set_timer") |
 | `add_blueprint_custom_event_node` | Add a Custom Event node |
-| `add_blueprint_variable_get_node` | Add a Variable Get node |
-| `add_blueprint_variable_set_node` | Add a Variable Set node |
+| `add_blueprint_variable_node` | Add a Variable Get or Set node (node_type: "get" or "set") |
 | `set_node_pin_default_value` | Set the default value of a node pin |
 | `add_blueprint_math_node` | Add math operations (+, -, *, /, >, <, ==, !=) |
 | `remove_blueprint_variable` | Remove a variable from a Blueprint |
 | `change_blueprint_variable_type` | Change a variable's type |
 | `delete_blueprint_node` | Delete a node from a Blueprint graph by ID |
 
-### Level Tools (11)
+### Level Tools (8)
 
 | Tool | Description |
 |------|-------------|
 | `new_level` | Create a new level (optionally from template) |
 | `load_level` | Load an existing level |
-| `save_level` | Save the current level |
-| `save_all_levels` | Save all modified levels |
+| `save_level` | Save the current level (save_all: true to save all modified levels) |
 | `get_current_level` | Get current level name and path |
-| `play_in_editor` | Start Play-In-Editor (PIE) |
-| `stop_play_in_editor` | Stop the PIE session |
-| `is_playing` | Check if PIE is active |
+| `play_in_editor` | Control PIE sessions (action: "start", "stop", or "query") |
 | `execute_console_command` | Run a console command (e.g., `stat fps`) |
 | `build_lighting` | Build lighting (Preview, Medium, High, Production) |
 | `set_world_settings` | Set game mode, kill Z, etc. |
 
-### Material Tools (12)
+### Material Tools (10)
 
 | Tool | Description |
 |------|-------------|
 | `create_material` | Create a new Material asset |
 | `create_material_instance` | Create a Material Instance from a parent material |
-| `set_material_scalar_param` | Set scalar parameter on a material instance |
-| `set_material_vector_param` | Set vector/color parameter on a material instance |
-| `set_material_texture_param` | Set texture parameter on a material instance |
+| `set_material_param` | Set a parameter on a material instance (param_type: "scalar", "vector", or "texture") |
 | `add_material_expression` | Add expression nodes (30+ types: Constant, Multiply, Lerp, Fresnel, Panner, TextureSample, ComponentMask, If, etc.) |
 | `connect_material_expressions` | Connect two expression nodes |
 | `connect_material_property` | Connect expression to material output (BaseColor, Roughness, etc.) |
@@ -345,13 +400,62 @@ Add the following to your MCP configuration:
 | `get_anim_blueprint_info` | Get detailed AnimBP information |
 | `set_anim_transition_rule` | Set a condition rule on a transition |
 
-### Process Tools (3)
+### Process Tools (5)
 
 | Tool | Description |
 |------|-------------|
 | `stop_unreal_editor` | Stop the Unreal Editor process (optionally saves first), caches paths for restart |
 | `start_unreal_editor` | Launch Unreal Editor with auto-discovery of editor and project paths |
 | `is_unreal_editor_running` | Check if the editor is running and MCP TCP connection is available |
+| `clear_mcp_cache` | Clear the in-memory MCP result cache and return hit/miss statistics |
+| `get_mcp_cache_stats` | Return cache hit/miss statistics and current entry counts |
+
+> **Note**: `stop_unreal_editor` and `start_unreal_editor` are unavailable when running in a Docker container (Linux). `is_unreal_editor_running` falls back to a TCP port check in container mode.
+
+## Docker Deployment
+
+The MCP server can run in a Docker container using SSE transport for remote or isolated environments.
+
+### Quick Start
+
+```bash
+# Build and start
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+### How It Works
+
+- The container runs the Python MCP server with SSE transport on port 8000
+- It connects to the Unreal Editor on the host machine via `host.docker.internal:55557`
+- AI clients connect to `http://localhost:8000/sse` instead of spawning a subprocess
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` or `sse` |
+| `UNREAL_HOST` | `127.0.0.1` | Host where UE editor is running |
+| `UNREAL_PORT` | `55557` | TCP port for UE plugin connection |
+
+### Running SSE Without Docker
+
+You can also run SSE mode locally without Docker:
+
+```bash
+# Windows
+set MCP_TRANSPORT=sse && python unreal_mcp_server.py
+
+# Linux/macOS
+MCP_TRANSPORT=sse python unreal_mcp_server.py
+```
+
+The server will start on `http://0.0.0.0:8000/sse`.
 
 ## PIE and RL Training Support
 

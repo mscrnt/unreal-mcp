@@ -7,7 +7,7 @@ material expressions, and applying materials to actors.
 
 import logging
 from typing import Dict, List, Any, Optional
-from mcp.server.fastmcp import FastMCP, Context
+from fastmcp import FastMCP, Context
 
 logger = logging.getLogger("UnrealMCP")
 

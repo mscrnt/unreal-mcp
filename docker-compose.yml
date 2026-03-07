@@ -1,0 +1,14 @@
+services:
+  unreal-mcp:
+    build:
+      context: ./Python
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - MCP_TRANSPORT=sse
+      - UNREAL_HOST=host.docker.internal
+      - UNREAL_PORT=55557
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

@@ -5,12 +5,13 @@ A simple MCP server for interacting with Unreal Engine.
 """
 
 import logging
+import os
 import socket
 import sys
 import json
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, Optional
-from mcp.server.fastmcp import FastMCP, Context
+from fastmcp import FastMCP, Context
 
 # Configure logging with more detailed format
 logging.basicConfig(
@@ -21,11 +22,14 @@ logging.basicConfig(
         # logging.StreamHandler(sys.stdout) # Remove this handler to unexpected non-whitespace characters in JSON
     ]
 )
+if os.environ.get("MCP_TRANSPORT") == "sse":
+    logging.getLogger().addHandler(logging.StreamHandler(sys.stderr))
+
 logger = logging.getLogger("UnrealMCP")
 
-# Configuration
-UNREAL_HOST = "127.0.0.1"
-UNREAL_PORT = 55557
+# Configuration — override via environment variables for Docker
+UNREAL_HOST = os.environ.get("UNREAL_HOST", "127.0.0.1")
+UNREAL_PORT = int(os.environ.get("UNREAL_PORT", "55557"))
 
 class UnrealConnection:
     """Connection to an Unreal Engine instance."""
@@ -261,7 +265,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
 # Initialize server
 mcp = FastMCP(
     "UnrealMCP",
-    description="Unreal Engine integration via Model Context Protocol",
+    instructions="Unreal Engine integration via Model Context Protocol",
     lifespan=server_lifespan
 )
 
@@ -280,8 +284,7 @@ from tools.anim_tools import register_anim_tools
 from tools.process_tools import register_process_tools
 
 # Load default scopes from config (falls back to all scopes if config missing)
-import os as _os
-_scope_config = _os.path.join(_os.path.dirname(__file__), "tool_scopes.json")
+_scope_config = os.path.join(os.path.dirname(__file__), "tool_scopes.json")
 _default_scopes = mcp_scopes.load_config(_scope_config)
 if not _default_scopes:
     _default_scopes = ["editor", "assets", "level", "process",
@@ -331,6 +334,9 @@ def list_tool_scopes(ctx: Context) -> dict:
     Use activate_tool_scope() to enable scopes needed for your current task.
     """
     return mcp_scopes.list_scopes()
+
+# Tell the scope manager how many always-on tools exist (the 3 above)
+mcp_scopes.set_always_on_count(3)
 
 @mcp.prompt()
 def info():
@@ -443,5 +449,9 @@ def info():
 
 # Run the server
 if __name__ == "__main__":
-    logger.info("Starting MCP server with stdio transport")
-    mcp.run(transport='stdio') 
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    logger.info(f"Starting MCP server with {transport} transport")
+    if transport == "sse":
+        mcp.run(transport=transport, host="0.0.0.0", port=8000)
+    else:
+        mcp.run(transport=transport)

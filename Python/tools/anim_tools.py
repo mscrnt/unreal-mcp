@@ -7,7 +7,7 @@ including state machines, states, transitions, and animation assignments.
 
 import logging
 from typing import Dict, List, Any, Optional
-from mcp.server.fastmcp import FastMCP, Context
+from fastmcp import FastMCP, Context
 
 logger = logging.getLogger("UnrealMCP")
 

@@ -9,7 +9,7 @@ import time
 import os
 import tempfile
 from typing import Dict, List, Any, Optional, Union
-from mcp.server.fastmcp import FastMCP, Context
+from fastmcp import FastMCP, Context
 from mcp.server.fastmcp.utilities.types import Image
 from mcp_cache import cache_get, cache_set, cache_invalidate, TTL_ACTORS
 

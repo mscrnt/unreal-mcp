@@ -63,7 +63,7 @@
 #include "Commands/UnrealMCPGameplayCommands.h"
 
 // Default settings
-#define MCP_SERVER_HOST "127.0.0.1"
+#define MCP_SERVER_HOST "0.0.0.0"
 #define MCP_SERVER_PORT 55557
 
 UUnrealMCPBridge::UUnrealMCPBridge()

@@ -11,7 +11,7 @@ reflects the change.
 
 import logging
 from typing import Dict, List, Any, Optional
-from mcp.server.fastmcp import FastMCP, Context
+from fastmcp import FastMCP, Context
 from mcp_cache import cache_get, cache_set, cache_invalidate, TTL_ASSETS
 
 logger = logging.getLogger("UnrealMCP")

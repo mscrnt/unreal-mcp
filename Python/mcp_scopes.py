@@ -20,6 +20,7 @@ Default config (tool_scopes.json) activates: editor, assets, level, process (~45
 Agents can activate additional scopes at runtime with activate_tool_scope().
 """
 
+import asyncio
 import logging
 import json
 import os
@@ -30,11 +31,20 @@ logger = logging.getLogger("UnrealMCP")
 # FastMCP instance (set at startup)
 _mcp = None
 
-# scope_name -> {tool_name: Tool}
+# scope_name -> {tool_name: FunctionTool}
 _scope_tools: Dict[str, Dict[str, Any]] = {}
 
 # Currently active scopes
 _active_scopes: Set[str] = set()
+
+# Count of always-on tools (scope management tools registered directly on mcp)
+_always_on_count: int = 0
+
+
+def _count_active_tools() -> int:
+    """Count currently active tools from our own tracking data."""
+    scoped = sum(len(tools) for scope, tools in _scope_tools.items() if scope in _active_scopes)
+    return scoped + _always_on_count
 
 
 def init(mcp_instance, default_scopes: List[str]) -> None:
@@ -45,32 +55,42 @@ def init(mcp_instance, default_scopes: List[str]) -> None:
     logger.info(f"Scope manager initialized. Default active scopes: {sorted(default_scopes)}")
 
 
+def set_always_on_count(count: int) -> None:
+    """Set the number of always-on tools (registered outside of scopes)."""
+    global _always_on_count
+    _always_on_count = count
+
+
 def register_scope(scope_name: str, register_fn) -> List[str]:
     """
     Register a tool module as a named scope.
 
     Calls register_fn(mcp) which registers tools via @mcp.tool().
     Tools are then stored in the scope registry. If the scope is not in the
-    default active set, tools are immediately removed from the tool manager so
-    they do not appear in tools/list.
+    default active set, tools are immediately removed so they do not appear
+    in tools/list.
 
     Returns the sorted list of tool names registered in this scope.
     """
     global _mcp, _scope_tools, _active_scopes
 
-    before = set(_mcp._tool_manager._tools.keys())
+    lp = _mcp.local_provider
+
+    # Snapshot tool names before registration
+    before = {t.name for t in asyncio.run(lp.list_tools())}
     register_fn(_mcp)
-    after = set(_mcp._tool_manager._tools.keys())
+    after = {t.name for t in asyncio.run(lp.list_tools())}
     new_names = after - before
 
+    # Store tool objects so we can re-add them later
     _scope_tools[scope_name] = {
-        name: _mcp._tool_manager._tools[name]
+        name: asyncio.run(lp.get_tool(name))
         for name in new_names
     }
 
     if scope_name not in _active_scopes:
         for name in new_names:
-            del _mcp._tool_manager._tools[name]
+            lp.remove_tool(name)
         logger.info(f"Scope '{scope_name}' registered — {len(new_names)} tools (inactive)")
     else:
         logger.info(f"Scope '{scope_name}' registered — {len(new_names)} tools (active)")
@@ -91,7 +111,7 @@ def activate(scope_name: str) -> Dict[str, Any]:
 
     tools = _scope_tools[scope_name]
     for name, tool in tools.items():
-        _mcp._tool_manager._tools[name] = tool
+        _mcp.add_tool(tool)
     _active_scopes.add(scope_name)
 
     logger.info(f"Activated scope '{scope_name}' (+{len(tools)} tools)")
@@ -99,7 +119,7 @@ def activate(scope_name: str) -> Dict[str, Any]:
         "success": True,
         "scope": scope_name,
         "tools_added": sorted(tools.keys()),
-        "total_active_tools": len(_mcp._tool_manager._tools),
+        "total_active_tools": _count_active_tools(),
     }
 
 
@@ -112,8 +132,12 @@ def deactivate(scope_name: str) -> Dict[str, Any]:
         return {"success": False, "message": f"Scope '{scope_name}' is not currently active"}
 
     tools = _scope_tools.get(scope_name, {})
+    lp = _mcp.local_provider
     for name in tools:
-        _mcp._tool_manager._tools.pop(name, None)
+        try:
+            lp.remove_tool(name)
+        except Exception:
+            pass
     _active_scopes.discard(scope_name)
 
     logger.info(f"Deactivated scope '{scope_name}' (-{len(tools)} tools)")
@@ -121,7 +145,7 @@ def deactivate(scope_name: str) -> Dict[str, Any]:
         "success": True,
         "scope": scope_name,
         "tools_removed": sorted(tools.keys()),
-        "total_active_tools": len(_mcp._tool_manager._tools),
+        "total_active_tools": _count_active_tools(),
     }
 
 
@@ -129,7 +153,7 @@ def list_scopes() -> Dict[str, Any]:
     """Return all scopes, their active status, tool counts, and tool names."""
     return {
         "active_scopes": sorted(_active_scopes),
-        "total_active_tools": len(_mcp._tool_manager._tools) if _mcp else 0,
+        "total_active_tools": _count_active_tools(),
         "scopes": {
             scope: {
                 "active": scope in _active_scopes,

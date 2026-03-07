@@ -8,6 +8,9 @@
         "run",
         "unreal_mcp_server.py"
       ]
+    },
+    "unrealMCP-docker": {
+      "url": "http://localhost:8000/sse"
     }
   }
 }

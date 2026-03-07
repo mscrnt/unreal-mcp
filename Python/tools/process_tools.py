@@ -8,14 +8,18 @@ subprocess/taskkill to start and stop the editor process.
 
 import logging
 import os
+import platform
 import subprocess
 import socket
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional
-from mcp.server.fastmcp import FastMCP, Context
+from fastmcp import FastMCP, Context
 
 logger = logging.getLogger("UnrealMCP")
+
+# Detect container mode (Linux + SSE transport = likely Docker)
+_IS_CONTAINER = os.environ.get("MCP_TRANSPORT") == "sse" and platform.system() != "Windows"
 
 # Cached paths discovered from a running editor process
 _cached_editor_path: Optional[str] = None
@@ -133,6 +137,14 @@ def register_process_tools(mcp: FastMCP):
         """
         global _cached_editor_path, _cached_project_path
 
+        if _IS_CONTAINER:
+            return {
+                "success": False,
+                "message": "stop_unreal_editor is not available in container mode. "
+                           "The Unreal Editor process runs on the host OS and cannot be "
+                           "controlled from inside the Docker container."
+            }
+
         if not _is_editor_running():
             return {"success": False, "message": "Unreal Editor is not running"}
 
@@ -208,6 +220,13 @@ def register_process_tools(mcp: FastMCP):
             timeout: Max seconds to wait for the editor to be ready (default 120)
         """
         global _cached_editor_path, _cached_project_path
+
+        if _IS_CONTAINER:
+            return {
+                "success": False,
+                "message": "start_unreal_editor is not available in container mode. "
+                           "Launch the Unreal Editor on the host OS before starting the container."
+            }
 
         if _is_editor_running():
             if _is_port_open():
@@ -312,6 +331,17 @@ def register_process_tools(mcp: FastMCP):
         Check if the Unreal Editor process is currently running
         and whether the MCP TCP connection is available.
         """
+        if _IS_CONTAINER:
+            host = os.environ.get("UNREAL_HOST", "127.0.0.1")
+            port = int(os.environ.get("UNREAL_PORT", "55557"))
+            port_open = _is_port_open(host=host, port=port)
+            return {
+                "running": "unknown (container mode)",
+                "mcp_connected": port_open,
+                "note": "Process detection unavailable in container mode. "
+                        "TCP connectivity to UE plugin is the only check available."
+            }
+
         running = _is_editor_running()
         port_open = _is_port_open() if running else False
 
