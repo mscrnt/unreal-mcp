@@ -10,7 +10,7 @@ import sys
 import json
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, Optional
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Context
 
 # Configure logging with more detailed format
 logging.basicConfig(
@@ -265,7 +265,9 @@ mcp = FastMCP(
     lifespan=server_lifespan
 )
 
-# Import and register tools
+# ── Scope-based tool loading ──────────────────────────────────────────────────
+# Import tool registrars and the scope manager
+import mcp_scopes
 from tools.editor_tools import register_editor_tools
 from tools.blueprint_tools import register_blueprint_tools
 from tools.node_tools import register_blueprint_node_tools
@@ -277,17 +279,58 @@ from tools.asset_tools import register_asset_tools
 from tools.anim_tools import register_anim_tools
 from tools.process_tools import register_process_tools
 
-# Register tools
-register_editor_tools(mcp)
-register_blueprint_tools(mcp)
-register_blueprint_node_tools(mcp)
-register_project_tools(mcp)
-register_umg_tools(mcp)
-register_level_tools(mcp)
-register_material_tools(mcp)
-register_asset_tools(mcp)
-register_anim_tools(mcp)
-register_process_tools(mcp)
+# Load default scopes from config (falls back to all scopes if config missing)
+import os as _os
+_scope_config = _os.path.join(_os.path.dirname(__file__), "tool_scopes.json")
+_default_scopes = mcp_scopes.load_config(_scope_config)
+if not _default_scopes:
+    _default_scopes = ["editor", "assets", "level", "process",
+                       "blueprint", "blueprint_nodes", "materials",
+                       "animation", "umg", "project"]
+
+mcp_scopes.init(mcp, _default_scopes)
+
+# Register all scopes — inactive ones are hidden from tools/list until activated
+mcp_scopes.register_scope("editor",           register_editor_tools)
+mcp_scopes.register_scope("assets",           register_asset_tools)
+mcp_scopes.register_scope("level",            register_level_tools)
+mcp_scopes.register_scope("process",          register_process_tools)
+mcp_scopes.register_scope("blueprint",        register_blueprint_tools)
+mcp_scopes.register_scope("blueprint_nodes",  register_blueprint_node_tools)
+mcp_scopes.register_scope("materials",        register_material_tools)
+mcp_scopes.register_scope("animation",        register_anim_tools)
+mcp_scopes.register_scope("umg",              register_umg_tools)
+mcp_scopes.register_scope("project",          register_project_tools)
+
+# Scope management tools — always available regardless of active scopes
+@mcp.tool()
+def activate_tool_scope(ctx: Context, scope: str) -> dict:
+    """
+    Activate a tool scope to add more tools to the active listing.
+
+    Available scopes: editor, assets, level, process, blueprint, blueprint_nodes,
+                      materials, animation, umg, project
+
+    Call list_tool_scopes() to see what is currently active and how many tools
+    each scope contains.
+    """
+    return mcp_scopes.activate(scope)
+
+@mcp.tool()
+def deactivate_tool_scope(ctx: Context, scope: str) -> dict:
+    """
+    Deactivate a tool scope to remove its tools from the active listing.
+    Reduces context window usage when those tools are no longer needed.
+    """
+    return mcp_scopes.deactivate(scope)
+
+@mcp.tool()
+def list_tool_scopes(ctx: Context) -> dict:
+    """
+    List all tool scopes, their active status, tool count, and tool names.
+    Use activate_tool_scope() to enable scopes needed for your current task.
+    """
+    return mcp_scopes.list_scopes()
 
 @mcp.prompt()
 def info():

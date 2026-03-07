@@ -432,147 +432,38 @@ def register_blueprint_node_tools(mcp: FastMCP):
     # ============================================================
 
     @mcp.tool()
-    def add_blueprint_branch_node(
+    def add_blueprint_flow_node(
         ctx: Context,
         blueprint_name: str,
-        node_position: List[float] = None
-    ) -> Dict[str, Any]:
-        """
-        Add a Branch (if/else) node to a Blueprint's event graph.
-
-        Args:
-            blueprint_name: Name of the target Blueprint
-            node_position: Optional [X, Y] position in the graph
-        """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            if node_position is None:
-                node_position = [0, 0]
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("add_blueprint_branch_node", {
-                "blueprint_name": blueprint_name,
-                "node_position": node_position
-            })
-            return response or {}
-        except Exception as e:
-            return {"success": False, "message": str(e)}
-
-    @mcp.tool()
-    def add_blueprint_for_loop_node(
-        ctx: Context,
-        blueprint_name: str,
-        first_index: int = 0,
-        last_index: int = 0,
-        node_position: List[float] = None
-    ) -> Dict[str, Any]:
-        """
-        Add a ForLoop macro node to a Blueprint's event graph.
-
-        Args:
-            blueprint_name: Name of the target Blueprint
-            first_index: Starting index for the loop
-            last_index: Ending index for the loop
-            node_position: Optional [X, Y] position in the graph
-        """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            if node_position is None:
-                node_position = [0, 0]
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("add_blueprint_for_loop_node", {
-                "blueprint_name": blueprint_name,
-                "first_index": first_index,
-                "last_index": last_index,
-                "node_position": node_position
-            })
-            return response or {}
-        except Exception as e:
-            return {"success": False, "message": str(e)}
-
-    @mcp.tool()
-    def add_blueprint_delay_node(
-        ctx: Context,
-        blueprint_name: str,
+        node_type: str,
+        node_position: List[float] = None,
         duration: float = 1.0,
-        node_position: List[float] = None
-    ) -> Dict[str, Any]:
-        """
-        Add a Delay node to a Blueprint's event graph.
-
-        Args:
-            blueprint_name: Name of the target Blueprint
-            duration: Delay duration in seconds
-            node_position: Optional [X, Y] position in the graph
-        """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            if node_position is None:
-                node_position = [0, 0]
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("add_blueprint_delay_node", {
-                "blueprint_name": blueprint_name,
-                "duration": duration,
-                "node_position": node_position
-            })
-            return response or {}
-        except Exception as e:
-            return {"success": False, "message": str(e)}
-
-    @mcp.tool()
-    def add_blueprint_print_string_node(
-        ctx: Context,
-        blueprint_name: str,
         text: str = "Hello",
-        node_position: List[float] = None
-    ) -> Dict[str, Any]:
-        """
-        Add a PrintString node to a Blueprint's event graph (useful for debugging).
-
-        Args:
-            blueprint_name: Name of the target Blueprint
-            text: Default text to print
-            node_position: Optional [X, Y] position in the graph
-        """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            if node_position is None:
-                node_position = [0, 0]
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("add_blueprint_print_string_node", {
-                "blueprint_name": blueprint_name,
-                "text": text,
-                "node_position": node_position
-            })
-            return response or {}
-        except Exception as e:
-            return {"success": False, "message": str(e)}
-
-    @mcp.tool()
-    def add_blueprint_set_timer_node(
-        ctx: Context,
-        blueprint_name: str,
-        function_name: str,
+        function_name: str = "",
         time: float = 1.0,
         looping: bool = False,
-        node_position: List[float] = None
+        first_index: int = 0,
+        last_index: int = 0
     ) -> Dict[str, Any]:
         """
-        Add a SetTimerByFunctionName node to a Blueprint's event graph.
+        Add a flow-control node to a Blueprint's event graph.
 
         Args:
             blueprint_name: Name of the target Blueprint
-            function_name: Name of the function to call on timer
-            time: Timer interval in seconds
-            looping: Whether the timer should loop
+            node_type: Type of node to add. One of:
+              "branch"       — Branch (if/else) node
+              "for_loop"     — ForLoop macro (use first_index, last_index)
+              "delay"        — Delay node (use duration in seconds)
+              "print_string" — PrintString debug node (use text)
+              "set_timer"    — SetTimerByFunctionName (use function_name, time, looping)
             node_position: Optional [X, Y] position in the graph
+            duration: Delay duration in seconds (for "delay")
+            text: Text to print (for "print_string")
+            function_name: Function to call on timer (for "set_timer")
+            time: Timer interval in seconds (for "set_timer")
+            looping: Whether timer loops (for "set_timer")
+            first_index: Loop start index (for "for_loop")
+            last_index: Loop end index (for "for_loop")
         """
         from unreal_mcp_server import get_unreal_connection
         try:
@@ -581,13 +472,29 @@ def register_blueprint_node_tools(mcp: FastMCP):
             unreal = get_unreal_connection()
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("add_blueprint_set_timer_node", {
-                "blueprint_name": blueprint_name,
-                "function_name": function_name,
-                "time": time,
-                "looping": looping,
-                "node_position": node_position
-            })
+
+            cmd_map = {
+                "branch":       "add_blueprint_branch_node",
+                "for_loop":     "add_blueprint_for_loop_node",
+                "delay":        "add_blueprint_delay_node",
+                "print_string": "add_blueprint_print_string_node",
+                "set_timer":    "add_blueprint_set_timer_node",
+            }
+            cmd = cmd_map.get(node_type.lower())
+            if cmd is None:
+                return {"success": False, "message": f"Unknown node_type '{node_type}'. Use: {list(cmd_map.keys())}"}
+
+            params = {"blueprint_name": blueprint_name, "node_position": node_position}
+            if node_type == "for_loop":
+                params.update({"first_index": first_index, "last_index": last_index})
+            elif node_type == "delay":
+                params["duration"] = duration
+            elif node_type == "print_string":
+                params["text"] = text
+            elif node_type == "set_timer":
+                params.update({"function_name": function_name, "time": time, "looping": looping})
+
+            response = unreal.send_command(cmd, params)
             return response or {}
         except Exception as e:
             return {"success": False, "message": str(e)}
@@ -624,18 +531,20 @@ def register_blueprint_node_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
-    def add_blueprint_variable_get_node(
+    def add_blueprint_variable_node(
         ctx: Context,
         blueprint_name: str,
         variable_name: str,
+        node_type: str = "get",
         node_position: List[float] = None
     ) -> Dict[str, Any]:
         """
-        Add a Variable Get node to a Blueprint's event graph.
+        Add a Variable Get or Set node to a Blueprint's event graph.
 
         Args:
             blueprint_name: Name of the target Blueprint
-            variable_name: Name of the variable to get
+            variable_name: Name of the variable
+            node_type: "get" to read the variable, "set" to write it (default "get")
             node_position: Optional [X, Y] position in the graph
         """
         from unreal_mcp_server import get_unreal_connection
@@ -645,41 +554,11 @@ def register_blueprint_node_tools(mcp: FastMCP):
             unreal = get_unreal_connection()
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("add_blueprint_variable_get_node", {
+            cmd = "add_blueprint_variable_get_node" if node_type.lower() == "get" else "add_blueprint_variable_set_node"
+            response = unreal.send_command(cmd, {
                 "blueprint_name": blueprint_name,
                 "variable_name": variable_name,
-                "node_position": node_position
-            })
-            return response or {}
-        except Exception as e:
-            return {"success": False, "message": str(e)}
-
-    @mcp.tool()
-    def add_blueprint_variable_set_node(
-        ctx: Context,
-        blueprint_name: str,
-        variable_name: str,
-        node_position: List[float] = None
-    ) -> Dict[str, Any]:
-        """
-        Add a Variable Set node to a Blueprint's event graph.
-
-        Args:
-            blueprint_name: Name of the target Blueprint
-            variable_name: Name of the variable to set
-            node_position: Optional [X, Y] position in the graph
-        """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            if node_position is None:
-                node_position = [0, 0]
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("add_blueprint_variable_set_node", {
-                "blueprint_name": blueprint_name,
-                "variable_name": variable_name,
-                "node_position": node_position
+                "node_position": node_position,
             })
             return response or {}
         except Exception as e:

@@ -22,14 +22,11 @@ def register_level_tools(mcp: FastMCP):
         template: str = ""
     ) -> Dict[str, Any]:
         """
-        Create a new level. Optionally from a template.
+        Create a new level, optionally from a template.
 
         Args:
             asset_path: Path to save the new level (e.g. "/Game/Maps/MyLevel")
-            template: Optional template level path to base the new level on
-
-        Returns:
-            Dict with level_path on success
+            template: Optional template level path
         """
         from unreal_mcp_server import get_unreal_connection
         try:
@@ -51,7 +48,7 @@ def register_level_tools(mcp: FastMCP):
         Load an existing level.
 
         Args:
-            level_path: The content path of the level to load (e.g. "/Game/Maps/MyLevel")
+            level_path: Content path of the level (e.g. "/Game/Maps/MyLevel")
         """
         from unreal_mcp_server import get_unreal_connection
         try:
@@ -65,31 +62,23 @@ def register_level_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
-    def save_level(ctx: Context) -> Dict[str, Any]:
-        """Save the current level."""
+    def save_level(ctx: Context, save_all: bool = False) -> Dict[str, Any]:
+        """
+        Save the current level. Pass save_all=True to save all modified levels.
+
+        Args:
+            save_all: If True, saves all dirty levels; if False (default), saves only the current level
+        """
         from unreal_mcp_server import get_unreal_connection
         try:
             unreal = get_unreal_connection()
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("save_level", {})
+            cmd = "save_all_levels" if save_all else "save_level"
+            response = unreal.send_command(cmd, {})
             return response or {}
         except Exception as e:
             logger.error(f"Error saving level: {e}")
-            return {"success": False, "message": str(e)}
-
-    @mcp.tool()
-    def save_all_levels(ctx: Context) -> Dict[str, Any]:
-        """Save all dirty (modified) levels."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("save_all_levels", {})
-            return response or {}
-        except Exception as e:
-            logger.error(f"Error saving all levels: {e}")
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
@@ -107,45 +96,39 @@ def register_level_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
-    def play_in_editor(ctx: Context) -> Dict[str, Any]:
-        """Start Play-In-Editor (PIE) to test the game."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("play_in_editor", {})
-            return response or {}
-        except Exception as e:
-            logger.error(f"Error starting PIE: {e}")
-            return {"success": False, "message": str(e)}
+    def play_in_editor(
+        ctx: Context,
+        action: str = "start"
+    ) -> Dict[str, Any]:
+        """
+        Control the Play-In-Editor (PIE) session.
 
-    @mcp.tool()
-    def stop_play_in_editor(ctx: Context) -> Dict[str, Any]:
-        """Stop the currently running Play-In-Editor session."""
+        Args:
+            action: One of:
+              "start"  — begin a PIE session
+              "stop"   — end the current PIE session
+              "query"  — check whether PIE is currently active (returns {"is_playing": bool})
+        """
         from unreal_mcp_server import get_unreal_connection
         try:
             unreal = get_unreal_connection()
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("stop_play_in_editor", {})
-            return response or {}
-        except Exception as e:
-            logger.error(f"Error stopping PIE: {e}")
-            return {"success": False, "message": str(e)}
 
-    @mcp.tool()
-    def is_playing(ctx: Context) -> Dict[str, Any]:
-        """Check if the editor is currently in a Play-In-Editor session."""
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("is_playing", {})
+            action = action.lower().strip()
+            cmd_map = {
+                "start": "play_in_editor",
+                "stop":  "stop_play_in_editor",
+                "query": "is_playing",
+            }
+            cmd = cmd_map.get(action)
+            if cmd is None:
+                return {"success": False, "message": f"Invalid action '{action}'. Use 'start', 'stop', or 'query'."}
+
+            response = unreal.send_command(cmd, {})
             return response or {}
         except Exception as e:
-            logger.error(f"Error checking PIE state: {e}")
+            logger.error(f"Error in play_in_editor({action}): {e}")
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
@@ -177,7 +160,7 @@ def register_level_tools(mcp: FastMCP):
         Build lighting for the current level.
 
         Args:
-            quality: Lighting quality - Preview, Medium, High, or Production
+            quality: Lighting quality — Preview, Medium, High, or Production
             with_reflection_captures: Whether to also build reflection captures
         """
         from unreal_mcp_server import get_unreal_connection

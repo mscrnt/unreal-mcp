@@ -70,93 +70,49 @@ def register_material_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
-    def set_material_scalar_param(
+    def set_material_param(
         ctx: Context,
         material_name: str,
+        param_type: str,
         param_name: str,
-        value: float
+        value: Any
     ) -> Dict[str, Any]:
         """
-        Set a scalar parameter value on a material instance.
+        Set a parameter on a material instance.
 
         Args:
             material_name: Path to the material instance
-            param_name: Name of the scalar parameter
-            value: Float value to set
+            param_type: Type of parameter. One of:
+              "scalar"  — a single float (value must be a number)
+              "vector"  — a color (value must be [R, G, B] or [R, G, B, A], each 0.0–1.0)
+              "texture" — a texture asset (value must be a content path string)
+            param_name: Name of the parameter on the material instance
+            value: The value to set (type depends on param_type above)
         """
         from unreal_mcp_server import get_unreal_connection
         try:
             unreal = get_unreal_connection()
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("set_material_scalar_param", {
-                "material_name": material_name,
-                "param_name": param_name,
-                "value": value
-            })
+
+            pt = param_type.lower().strip()
+            if pt == "scalar":
+                response = unreal.send_command("set_material_scalar_param", {
+                    "material_name": material_name, "param_name": param_name, "value": value
+                })
+            elif pt == "vector":
+                response = unreal.send_command("set_material_vector_param", {
+                    "material_name": material_name, "param_name": param_name, "value": value
+                })
+            elif pt == "texture":
+                response = unreal.send_command("set_material_texture_param", {
+                    "material_name": material_name, "param_name": param_name, "texture_path": value
+                })
+            else:
+                return {"success": False, "message": f"Unknown param_type '{param_type}'. Use 'scalar', 'vector', or 'texture'."}
             return response or {}
         except Exception as e:
-            logger.error(f"Error setting scalar param: {e}")
-            return {"success": False, "message": str(e)}
-
-    @mcp.tool()
-    def set_material_vector_param(
-        ctx: Context,
-        material_name: str,
-        param_name: str,
-        value: List[float]
-    ) -> Dict[str, Any]:
-        """
-        Set a vector/color parameter value on a material instance.
-
-        Args:
-            material_name: Path to the material instance
-            param_name: Name of the vector parameter
-            value: [R, G, B] or [R, G, B, A] color values (0.0 to 1.0)
-        """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("set_material_vector_param", {
-                "material_name": material_name,
-                "param_name": param_name,
-                "value": value
-            })
-            return response or {}
-        except Exception as e:
-            logger.error(f"Error setting vector param: {e}")
-            return {"success": False, "message": str(e)}
-
-    @mcp.tool()
-    def set_material_texture_param(
-        ctx: Context,
-        material_name: str,
-        param_name: str,
-        texture_path: str
-    ) -> Dict[str, Any]:
-        """
-        Set a texture parameter value on a material instance.
-
-        Args:
-            material_name: Path to the material instance
-            param_name: Name of the texture parameter
-            texture_path: Path to the texture asset
-        """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("set_material_texture_param", {
-                "material_name": material_name,
-                "param_name": param_name,
-                "texture_path": texture_path
-            })
-            return response or {}
-        except Exception as e:
-            logger.error(f"Error setting texture param: {e}")
+            logger.error(f"Error setting material param: {e}")
             return {"success": False, "message": str(e)}
 
     @mcp.tool()

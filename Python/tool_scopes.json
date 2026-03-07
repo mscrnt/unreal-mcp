@@ -1,0 +1,12 @@
+{
+  "_comment": "Controls which tool scopes are active by default when the MCP server starts.",
+  "_comment2": "Available scopes: editor, assets, level, process, blueprint, blueprint_nodes, materials, animation, umg, project",
+  "_comment3": "Agents can activate/deactivate scopes at runtime with activate_tool_scope() and deactivate_tool_scope().",
+
+  "default_scopes": [
+    "editor",
+    "assets",
+    "level",
+    "process"
+  ]
+}

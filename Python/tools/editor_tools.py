@@ -880,71 +880,49 @@ def register_editor_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
-    def spawn_editor_utility_tab(
+    def editor_utility_tab(
         ctx: Context,
-        asset_path: str,
+        action: str,
+        asset_path: str = "",
         tab_id: str = ""
     ) -> Dict[str, Any]:
         """
-        Open an Editor Utility Widget Blueprint as an editor tab.
-
-        Creates a new tab in the editor containing the widget. Returns the tab ID
-        which can be used to close or check the tab later.
+        Manage Editor Utility Widget tabs.
 
         Args:
-            asset_path: Content path to the Editor Utility Widget Blueprint
-            tab_id: Optional explicit tab ID. If empty, one is auto-generated.
+            action: One of:
+              "spawn"  — open a widget as an editor tab (requires asset_path; tab_id optional)
+              "close"  — close a tab by ID (requires tab_id)
+              "exists" — check if a tab is open (requires tab_id; returns {"exists": bool})
+            asset_path: Content path to the Editor Utility Widget Blueprint (for "spawn")
+            tab_id: Tab ID to close or check (for "close"/"exists"), or an explicit ID to use on spawn
         """
         from unreal_mcp_server import get_unreal_connection
         try:
             unreal = get_unreal_connection()
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            params = {"asset_path": asset_path}
-            if tab_id:
-                params["tab_id"] = tab_id
-            response = unreal.send_command("spawn_editor_utility_tab", params)
-            return response or {}
+
+            action = action.lower().strip()
+            if action == "spawn":
+                if not asset_path:
+                    return {"success": False, "message": "asset_path is required for action='spawn'"}
+                params = {"asset_path": asset_path}
+                if tab_id:
+                    params["tab_id"] = tab_id
+                return unreal.send_command("spawn_editor_utility_tab", params) or {}
+            elif action == "close":
+                if not tab_id:
+                    return {"success": False, "message": "tab_id is required for action='close'"}
+                return unreal.send_command("close_editor_utility_tab", {"tab_id": tab_id}) or {}
+            elif action == "exists":
+                if not tab_id:
+                    return {"success": False, "message": "tab_id is required for action='exists'"}
+                return unreal.send_command("does_editor_utility_tab_exist", {"tab_id": tab_id}) or {}
+            else:
+                return {"success": False, "message": f"Unknown action '{action}'. Use 'spawn', 'close', or 'exists'."}
         except Exception as e:
-            logger.error(f"Error spawning editor utility tab: {e}")
-            return {"success": False, "message": str(e)}
-
-    @mcp.tool()
-    def close_editor_utility_tab(ctx: Context, tab_id: str) -> Dict[str, Any]:
-        """
-        Close an Editor Utility Widget tab by its ID.
-
-        Args:
-            tab_id: The tab ID returned from spawn_editor_utility_tab
-        """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("close_editor_utility_tab", {"tab_id": tab_id})
-            return response or {}
-        except Exception as e:
-            logger.error(f"Error closing editor utility tab: {e}")
-            return {"success": False, "message": str(e)}
-
-    @mcp.tool()
-    def does_editor_utility_tab_exist(ctx: Context, tab_id: str) -> Dict[str, Any]:
-        """
-        Check if an Editor Utility Widget tab exists (is currently open).
-
-        Args:
-            tab_id: The tab ID to check
-        """
-        from unreal_mcp_server import get_unreal_connection
-        try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
-            response = unreal.send_command("does_editor_utility_tab_exist", {"tab_id": tab_id})
-            return response or {}
-        except Exception as e:
-            logger.error(f"Error checking editor utility tab: {e}")
+            logger.error(f"Error in editor_utility_tab({action}): {e}")
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
