@@ -22,6 +22,10 @@
 
 class FMCPServerRunnable;
 
+/** Delegate type for external command handlers registered via the extension system. */
+DECLARE_DELEGATE_RetVal_TwoParams(TSharedPtr<FJsonObject>, FMCPCommandHandler,
+	const FString& /*CommandType*/, const TSharedPtr<FJsonObject>& /*Params*/);
+
 /**
  * Editor subsystem for MCP Bridge
  * Handles communication between external tools and the Unreal Editor
@@ -49,6 +53,10 @@ public:
 	// Command execution
 	FString ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
 
+	// Extension system — allows other plugins to register custom command handlers
+	void RegisterExtensionHandler(const FString& CommandPrefix, FMCPCommandHandler Handler);
+	void UnregisterExtensionHandler(const FString& CommandPrefix);
+
 private:
 	// Server state
 	bool bIsRunning;
@@ -71,4 +79,7 @@ private:
 	TSharedPtr<FUnrealMCPAssetCommands> AssetCommands;
 	TSharedPtr<FUnrealMCPGameplayCommands> GameplayCommands;
 	TSharedPtr<FUnrealMCPAnimBlueprintCommands> AnimBlueprintCommands;
-}; 
+
+	// Extension handlers: prefix -> delegate
+	TMap<FString, FMCPCommandHandler> ExtensionHandlers;
+};

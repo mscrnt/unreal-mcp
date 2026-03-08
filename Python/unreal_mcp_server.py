@@ -6,9 +6,11 @@ A simple MCP server for interacting with Unreal Engine.
 
 import logging
 import os
+import platform
 import socket
 import sys
 import json
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, Optional
 from fastmcp import FastMCP, Context
@@ -30,6 +32,167 @@ logger = logging.getLogger("UnrealMCP")
 # Configuration — override via environment variables for Docker
 UNREAL_HOST = os.environ.get("UNREAL_HOST", "127.0.0.1")
 UNREAL_PORT = int(os.environ.get("UNREAL_PORT", "55557"))
+
+# Crash detection state
+_last_successful_connection: float = 0.0  # timestamp of last successful TCP connect
+_last_crash_check: float = 0.0
+_last_crash_info: Optional[Dict[str, Any]] = None
+
+
+def check_for_editor_crash() -> Optional[Dict[str, Any]]:
+    """Check if the Unreal Editor has crashed recently.
+
+    Looks for crash dump files and determines if the editor process
+    disappeared unexpectedly (crash vs intentional shutdown).
+
+    Returns crash info dict if crash detected, None otherwise.
+    """
+    global _last_crash_check, _last_crash_info, _last_successful_connection
+
+    now = time.time()
+    # Don't re-check more than once per 5 seconds
+    if now - _last_crash_check < 5.0:
+        return _last_crash_info
+    _last_crash_check = now
+
+    # Only consider it a crash if we had a recent connection
+    if _last_successful_connection == 0.0:
+        _last_crash_info = None
+        return None
+
+    # Check for UE crash logs
+    crash_info = _find_recent_crash_log()
+    if crash_info:
+        _last_crash_info = crash_info
+        return crash_info
+
+    # If we had a connection recently (last 60s) and now TCP is dead and process is gone,
+    # it's likely a crash even without a crash log
+    if now - _last_successful_connection < 60.0:
+        if not _is_port_open_quick() and not _is_process_alive():
+            _last_crash_info = {
+                "crashed": True,
+                "message": "Unreal Editor process disappeared unexpectedly (possible crash). "
+                           "No crash log found — the editor may have been killed or encountered a silent fatal error.",
+                "last_connection": _last_successful_connection,
+                "seconds_since_connection": round(now - _last_successful_connection, 1)
+            }
+            return _last_crash_info
+
+    _last_crash_info = None
+    return None
+
+
+def clear_crash_state():
+    """Clear crash detection state after editor restarts successfully."""
+    global _last_crash_info
+    _last_crash_info = None
+
+
+def _is_port_open_quick(timeout: float = 1.0) -> bool:
+    """Quick TCP port check."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect((UNREAL_HOST, UNREAL_PORT))
+            return True
+    except (socket.timeout, ConnectionRefusedError, OSError):
+        return False
+
+
+def _is_process_alive() -> bool:
+    """Check if UnrealEditor.exe process exists."""
+    if platform.system() != "Windows":
+        return False
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['tasklist', '/FI', 'IMAGENAME eq UnrealEditor.exe', '/NH'],
+            capture_output=True, text=True, timeout=5,
+            creationflags=0x08000000  # CREATE_NO_WINDOW
+        )
+        return 'UnrealEditor.exe' in result.stdout
+    except Exception:
+        return False
+
+
+def _find_recent_crash_log() -> Optional[Dict[str, Any]]:
+    """Look for crash dump files created in the last 2 minutes."""
+    import glob
+    from pathlib import Path
+
+    crash_dirs = []
+
+    # Project-level crashes
+    project_dir = os.environ.get("UNREAL_PROJECT_DIR")
+    if not project_dir:
+        # Try to infer from cached paths
+        server_dir = Path(__file__).resolve().parent.parent
+        for uproject in server_dir.glob("*/*.uproject"):
+            crash_dirs.append(uproject.parent / "Saved" / "Crashes")
+            break
+    else:
+        crash_dirs.append(Path(project_dir) / "Saved" / "Crashes")
+
+    # Engine-level crashes
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if local_app_data:
+        crash_dirs.append(Path(local_app_data) / "UnrealEngine" / "5.6" / "Saved" / "Crashes")
+
+    now = time.time()
+    max_age = 120  # 2 minutes
+
+    for crash_dir in crash_dirs:
+        if not crash_dir.exists():
+            continue
+        try:
+            # Look for crash folders (named with timestamps)
+            for entry in sorted(crash_dir.iterdir(), reverse=True):
+                if not entry.is_dir():
+                    continue
+                # Check modification time
+                mtime = entry.stat().st_mtime
+                if now - mtime > max_age:
+                    break  # Sorted newest first, so stop early
+
+                # Found a recent crash folder — try to read the log
+                crash_log = entry / "CrashContext.runtime-xml"
+                error_msg = "Unknown crash"
+
+                if crash_log.exists():
+                    try:
+                        content = crash_log.read_text(encoding='utf-8', errors='replace')
+                        # Extract error message from XML
+                        import re
+                        match = re.search(r'<ErrorMessage>(.*?)</ErrorMessage>', content, re.DOTALL)
+                        if match:
+                            error_msg = match.group(1).strip()[:500]
+                    except Exception:
+                        pass
+
+                # Also check for UE crash log txt
+                for log_file in entry.glob("*.log"):
+                    try:
+                        lines = log_file.read_text(encoding='utf-8', errors='replace').splitlines()
+                        # Look for the fatal error line
+                        for line in lines[-50:]:
+                            if 'Fatal error' in line or 'Assertion failed' in line:
+                                error_msg = line.strip()[:500]
+                                break
+                    except Exception:
+                        pass
+
+                return {
+                    "crashed": True,
+                    "message": f"Unreal Editor crashed: {error_msg}",
+                    "crash_folder": str(entry),
+                    "crash_time": mtime,
+                    "seconds_ago": round(now - mtime, 1)
+                }
+        except PermissionError:
+            continue
+
+    return None
 
 class UnrealConnection:
     """Connection to an Unreal Engine instance."""
@@ -64,9 +227,12 @@ class UnrealConnection:
             
             self.socket.connect((UNREAL_HOST, UNREAL_PORT))
             self.connected = True
+            global _last_successful_connection
+            _last_successful_connection = time.time()
+            clear_crash_state()
             logger.info("Connected to Unreal Engine")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to connect to Unreal: {e}")
             self.connected = False
@@ -140,6 +306,16 @@ class UnrealConnection:
             self.connected = False
         
         if not self.connect():
+            # Check if this is a crash rather than the editor simply not running
+            crash_info = check_for_editor_crash()
+            if crash_info:
+                logger.error(f"Editor crash detected: {crash_info.get('message', 'Unknown crash')}")
+                return {
+                    "status": "error",
+                    "error": crash_info["message"],
+                    "crash": True,
+                    "crash_info": crash_info
+                }
             logger.error("Failed to connect to Unreal Engine for command")
             return None
         
@@ -199,6 +375,17 @@ class UnrealConnection:
             except:
                 pass
             self.socket = None
+
+            # Check if the error was caused by a crash
+            crash_info = check_for_editor_crash()
+            if crash_info:
+                return {
+                    "status": "error",
+                    "error": crash_info["message"],
+                    "crash": True,
+                    "crash_info": crash_info
+                }
+
             return {
                 "status": "error",
                 "error": str(e)
@@ -282,6 +469,7 @@ from tools.material_tools import register_material_tools
 from tools.asset_tools import register_asset_tools
 from tools.anim_tools import register_anim_tools
 from tools.process_tools import register_process_tools
+from tools.worldbuilding_tools import register_worldbuilding_tools
 
 # Load default scopes from config (falls back to all scopes if config missing)
 _scope_config = os.path.join(os.path.dirname(__file__), "tool_scopes.json")
@@ -304,6 +492,36 @@ mcp_scopes.register_scope("materials",        register_material_tools)
 mcp_scopes.register_scope("animation",        register_anim_tools)
 mcp_scopes.register_scope("umg",              register_umg_tools)
 mcp_scopes.register_scope("project",          register_project_tools)
+mcp_scopes.register_scope("worldbuilding",    register_worldbuilding_tools)
+
+# Auto-discover user tools from UserTools/ directory
+def _discover_user_tools(mcp_instance):
+    """Scan UserTools/ for .py files with register_tools(mcp) functions."""
+    user_dir = os.path.join(os.path.dirname(__file__), "UserTools")
+    if not os.path.isdir(user_dir):
+        logger.info("UserTools/ directory not found, skipping user tool discovery")
+        return
+    import importlib.util
+    loaded = []
+    for f in sorted(os.listdir(user_dir)):
+        if f.endswith('.py') and not f.startswith('_'):
+            filepath = os.path.join(user_dir, f)
+            try:
+                spec = importlib.util.spec_from_file_location(f"user_{f[:-3]}", filepath)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                if hasattr(mod, 'register_tools'):
+                    mod.register_tools(mcp_instance)
+                    loaded.append(f)
+                    logger.info(f"UserTools: loaded {f}")
+                else:
+                    logger.warning(f"UserTools: {f} has no register_tools() function, skipping")
+            except Exception as e:
+                logger.error(f"UserTools: failed to load {f}: {e}")
+    if loaded:
+        logger.info(f"UserTools: loaded {len(loaded)} file(s): {loaded}")
+
+mcp_scopes.register_scope("user",             _discover_user_tools)
 
 # Scope management tools — always available regardless of active scopes
 @mcp.tool()
@@ -312,7 +530,7 @@ def activate_tool_scope(ctx: Context, scope: str) -> dict:
     Activate a tool scope to add more tools to the active listing.
 
     Available scopes: editor, assets, level, process, blueprint, blueprint_nodes,
-                      materials, animation, umg, project
+                      materials, animation, umg, project, worldbuilding, user
 
     Call list_tool_scopes() to see what is currently active and how many tools
     each scope contains.
@@ -406,6 +624,9 @@ def info():
     - `set_physics_properties(blueprint_name, component_name)` - Set physics
     - `compile_blueprint(blueprint_name)` - Compile changes
     - `set_blueprint_property(blueprint_name, property_name, property_value)` - Set property
+    - `inspect_blueprint(blueprint_name, include_*)` - Inspect variables, functions, components, interfaces, event graph
+    - `analyze_blueprint_graph(blueprint_name, graph_name)` - Deep graph/node/pin/connection analysis
+    - `set_blueprint_metadata(blueprint_name, category, description, ...)` - Set metadata fields
 
     ## Blueprint Node Management
     ### Basic Nodes
@@ -428,6 +649,9 @@ def info():
     - `add_blueprint_variable_set_node(blueprint_name, variable_name)` - Set variable
     - `set_node_pin_default_value(blueprint_name, node_id, pin_name, value)` - Set pin default
     - `add_blueprint_math_node(blueprint_name, operation)` - Math operations (+,-,*,/,>,<,==,!=)
+    ### Function Management
+    - `blueprint_function(blueprint_name, action, function_name)` - Create/delete/rename functions
+    - `blueprint_function_param(blueprint_name, function_name, direction, param_name, param_type)` - Add input/output params
 
     ## UMG Widgets
     - `create_umg_widget_blueprint(widget_name)` - Create widget BP

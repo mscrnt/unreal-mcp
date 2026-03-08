@@ -499,4 +499,133 @@ def register_blueprint_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
-    logger.info("Blueprint tools registered successfully") 
+    @mcp.tool()
+    def inspect_blueprint(
+        ctx: Context,
+        blueprint_name: str,
+        include_metadata: bool = True,
+        include_variables: bool = False,
+        include_functions: bool = False,
+        include_components: bool = False,
+        include_interfaces: bool = False,
+        include_event_graph: bool = False,
+        variable_name: str = None,
+        function_name: str = None
+    ) -> Dict[str, Any]:
+        """
+        Inspect a Blueprint asset. Returns metadata by default; enable include_* flags
+        for variables, functions, components, interfaces, or event graph summary.
+        Use variable_name or function_name to drill down into a specific item.
+
+        Args:
+            blueprint_name: Name of the Blueprint to inspect
+            include_metadata: Include parent class, category, description, flags (default True)
+            include_variables: Include variable list with types and defaults
+            include_functions: Include function list with inputs/outputs
+            include_components: Include component hierarchy
+            include_interfaces: Include implemented interfaces
+            include_event_graph: Include event graph node summary
+            variable_name: Get detailed info for a specific variable only
+            function_name: Get detailed info for a specific function only
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {
+                "blueprint_name": blueprint_name,
+                "include_metadata": include_metadata,
+                "include_variables": include_variables,
+                "include_functions": include_functions,
+                "include_components": include_components,
+                "include_interfaces": include_interfaces,
+                "include_event_graph": include_event_graph,
+            }
+            if variable_name:
+                params["variable_name"] = variable_name
+            if function_name:
+                params["function_name"] = function_name
+            response = unreal.send_command("inspect_blueprint", params)
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error inspecting blueprint: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def analyze_blueprint_graph(
+        ctx: Context,
+        blueprint_name: str,
+        graph_name: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Deep analysis of a Blueprint graph. Returns all nodes with positions, pins,
+        connections, and execution flow. Defaults to the event graph; pass a function
+        name to analyze a function graph instead.
+
+        Args:
+            blueprint_name: Name of the Blueprint
+            graph_name: Name of the graph to analyze (empty = EventGraph, or a function name)
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {"blueprint_name": blueprint_name}
+            if graph_name:
+                params["graph_name"] = graph_name
+            response = unreal.send_command("analyze_blueprint_graph", params)
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error analyzing blueprint graph: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_blueprint_metadata(
+        ctx: Context,
+        blueprint_name: str,
+        category: str = None,
+        description: str = None,
+        namespace: str = None,
+        display_name: str = None,
+        is_abstract: bool = None,
+        is_deprecated: bool = None
+    ) -> Dict[str, Any]:
+        """
+        Set metadata on a Blueprint class. Only provided fields are modified.
+
+        Args:
+            blueprint_name: Name of the Blueprint
+            category: Blueprint category for organization
+            description: Blueprint description/tooltip
+            namespace: Blueprint namespace
+            display_name: Display name in the editor
+            is_abstract: Whether the class is abstract (cannot be placed)
+            is_deprecated: Whether the class is deprecated
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {"blueprint_name": blueprint_name}
+            if category is not None:
+                params["category"] = category
+            if description is not None:
+                params["description"] = description
+            if namespace is not None:
+                params["namespace"] = namespace
+            if display_name is not None:
+                params["display_name"] = display_name
+            if is_abstract is not None:
+                params["is_abstract"] = is_abstract
+            if is_deprecated is not None:
+                params["is_deprecated"] = is_deprecated
+            response = unreal.send_command("set_blueprint_metadata", params)
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error setting blueprint metadata: {e}")
+            return {"success": False, "message": str(e)}
+
+    logger.info("Blueprint tools registered successfully")

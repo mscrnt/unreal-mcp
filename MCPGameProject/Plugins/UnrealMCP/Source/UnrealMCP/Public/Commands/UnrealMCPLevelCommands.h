@@ -22,4 +22,5 @@ private:
 	TSharedPtr<FJsonObject> HandleExecuteConsoleCommand(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleBuildLighting(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleSetWorldSettings(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleExecutePython(const TSharedPtr<FJsonObject>& Params);
 };

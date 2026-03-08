@@ -37,6 +37,19 @@ def register_level_tools(mcp: FastMCP):
             if template:
                 params["template"] = template
             response = unreal.send_command("new_level", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            # If PIE was blocking, stop it automatically and retry
+            error_msg = response.get("error", "")
+            if "Play-In-Editor is active" in error_msg:
+                import time
+                logger.info("PIE active during new_level — stopping PIE and retrying")
+                stop_resp = unreal.send_command("stop_play_in_editor", {})
+                if stop_resp and stop_resp.get("status") != "error":
+                    time.sleep(1)
+                    response = unreal.send_command("new_level", params)
+
             return response or {}
         except Exception as e:
             logger.error(f"Error creating new level: {e}")
@@ -51,11 +64,25 @@ def register_level_tools(mcp: FastMCP):
             level_path: Content path of the level (e.g. "/Game/Maps/MyLevel")
         """
         from unreal_mcp_server import get_unreal_connection
+        import time
         try:
             unreal = get_unreal_connection()
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
             response = unreal.send_command("load_level", {"level_path": level_path})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            # If PIE was blocking, stop it automatically and retry
+            error_msg = response.get("error", "")
+            if "Play-In-Editor is active" in error_msg:
+                logger.info("PIE active during load_level — stopping PIE and retrying")
+                stop_resp = unreal.send_command("stop_play_in_editor", {})
+                if stop_resp and stop_resp.get("status") != "error":
+                    time.sleep(1)  # Give PIE teardown a tick
+                    response = unreal.send_command("load_level", {"level_path": level_path})
+
             return response or {}
         except Exception as e:
             logger.error(f"Error loading level: {e}")
@@ -204,6 +231,41 @@ def register_level_tools(mcp: FastMCP):
             return response or {}
         except Exception as e:
             logger.error(f"Error setting world settings: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def execute_python(
+        ctx: Context,
+        code: str = None,
+        file: str = None
+    ) -> Dict[str, Any]:
+        """
+        Execute Python code inside the Unreal Editor's embedded Python interpreter.
+        Has access to the `unreal` module for full UE Python API. Provide either
+        inline code or a file path, not both.
+
+        Args:
+            code: Python code to execute inline (multiline supported)
+            file: Absolute path to a .py file to execute
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            if not code and not file:
+                return {"success": False, "message": "Provide either 'code' or 'file', not neither"}
+            if code and file:
+                return {"success": False, "message": "Provide either 'code' or 'file', not both"}
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {}
+            if code:
+                params["code"] = code
+            if file:
+                params["file"] = file
+            response = unreal.send_command("execute_python", params)
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error executing Python: {e}")
             return {"success": False, "message": str(e)}
 
     logger.info("Level tools registered successfully")

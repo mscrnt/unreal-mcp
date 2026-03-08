@@ -362,4 +362,28 @@ def register_material_tools(mcp: FastMCP):
             logger.error(f"Error getting material expressions: {e}")
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def get_material_info(
+        ctx: Context,
+        material_name: str
+    ) -> Dict[str, Any]:
+        """
+        Get detailed information about a material or material instance.
+        Returns type, blend mode, shading model, parameters, and usage flags.
+        For material instances, returns parent and overridden parameter values.
+
+        Args:
+            material_name: Content path of the material (e.g. "/Game/Materials/M_Red")
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("get_material_info", {"material_name": material_name})
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error getting material info: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Material tools registered successfully")

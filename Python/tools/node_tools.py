@@ -714,4 +714,111 @@ def register_blueprint_node_tools(mcp: FastMCP):
         except Exception as e:
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def blueprint_function(
+        ctx: Context,
+        blueprint_name: str,
+        action: str,
+        function_name: str,
+        new_name: str = None,
+        access_level: str = "Public",
+        is_pure: bool = False,
+        category: str = "",
+        description: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Manage Blueprint functions.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            action: One of:
+              "create" — create a new function (use access_level, is_pure, category, description)
+              "delete" — delete a function
+              "rename" — rename a function (requires new_name)
+            function_name: Name of the function
+            new_name: New name when action is "rename"
+            access_level: "Public", "Protected", or "Private" (for "create")
+            is_pure: Whether the function is pure (for "create")
+            category: Function category in the editor (for "create")
+            description: Function tooltip (for "create")
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            cmd_map = {
+                "create": "create_blueprint_function",
+                "delete": "delete_blueprint_function",
+                "rename": "rename_blueprint_function",
+            }
+            act = action.lower()
+            cmd = cmd_map.get(act)
+            if not cmd:
+                return {"success": False, "message": f"Unknown action '{action}'. Use: create, delete, rename"}
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {"blueprint_name": blueprint_name, "function_name": function_name}
+            if act == "create":
+                params.update({
+                    "access_level": access_level,
+                    "is_pure": is_pure,
+                    "category": category,
+                    "description": description,
+                })
+            elif act == "rename":
+                if not new_name:
+                    return {"success": False, "message": "new_name is required for rename action"}
+                params["new_name"] = new_name
+            response = unreal.send_command(cmd, params)
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error managing blueprint function: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def blueprint_function_param(
+        ctx: Context,
+        blueprint_name: str,
+        function_name: str,
+        direction: str,
+        param_name: str,
+        param_type: str,
+        default_value: str = None
+    ) -> Dict[str, Any]:
+        """
+        Add an input or output parameter to a Blueprint function.
+
+        Args:
+            blueprint_name: Name of the target Blueprint
+            function_name: Name of the function
+            direction: "input" or "output"
+            param_name: Name of the parameter
+            param_type: Type (Boolean, Integer, Float, String, Vector, Rotator, Transform, Object, Byte, Name, Text)
+            default_value: Default value for the parameter (optional)
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            d = direction.lower()
+            if d == "input":
+                cmd = "add_blueprint_function_input"
+            elif d == "output":
+                cmd = "add_blueprint_function_output"
+            else:
+                return {"success": False, "message": f"Unknown direction '{direction}'. Use: input, output"}
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            params = {
+                "blueprint_name": blueprint_name,
+                "function_name": function_name,
+                "param_name": param_name,
+                "param_type": param_type,
+            }
+            if default_value is not None:
+                params["default_value"] = default_value
+            response = unreal.send_command(cmd, params)
+            return response or {}
+        except Exception as e:
+            logger.error(f"Error adding function parameter: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Blueprint node tools registered successfully")

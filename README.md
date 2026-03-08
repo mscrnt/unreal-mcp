@@ -12,7 +12,7 @@
 
 This project enables AI assistant clients like Cursor, Windsurf, Claude Desktop, and Claude Code to control Unreal Engine through natural language using the Model Context Protocol (MCP).
 
-> **Fork note:** This is a fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with significant expansions — from ~35 tools to **102 tools** — covering materials, assets, levels, animation blueprints, PIE testing, RL agent support, visual feedback via screenshots, Editor Utility Widgets, dynamic tool scopes, Docker/SSE deployment, and more.
+> **Fork note:** This is a fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with significant expansions — from ~35 tools to **117 tools** — covering materials, assets, levels, animation blueprints, PIE testing, RL agent support, visual feedback via screenshots, Editor Utility Widgets, blueprint introspection, function management, world building, embedded Python execution, dynamic tool scopes, C++ extension system, Docker/SSE deployment, and more.
 
 ## Warning: Experimental Status
 
@@ -25,20 +25,22 @@ This project is currently in an **EXPERIMENTAL** state. The API, functionality, 
 
 ## Overview
 
-The Unreal MCP integration provides **102 tools** across 10 categories for controlling Unreal Engine through natural language:
+The Unreal MCP integration provides **117 tools** across 12 scopes for controlling Unreal Engine through natural language:
 
 | Category | Tools | Capabilities |
 |----------|:-----:|-------------|
-| **Editor** | 24 | Actor CRUD, transforms, properties, selection, duplication, viewport camera, material assignment (StaticMesh + SkeletalMesh), actor tags, PIE movement input, pawn actions (jump/crouch/launch), viewport screenshots with grid sequences, Editor Utility Widget tab management |
-| **Blueprints** | 9 | Create Blueprint classes, add/configure/reparent/remove components, set properties, physics, compile with error reporting |
-| **Blueprint Nodes** | 16 | Events, functions, flow control (branch/loop/delay/timer/print), custom events, math ops, variables (get/set/add/remove/change type), pin defaults, self/component references, node connections, node deletion |
-| **Level** | 8 | Create/load/save levels, Play-In-Editor (start/stop/query), console commands, build lighting, world settings |
-| **Materials** | 10 | Create materials and instances, scalar/vector/texture parameters, 30+ material expression types, expression property editing, node connections, apply to actors, recompile |
+| **Editor** | 25 | Actor CRUD, transforms, properties, selection, duplication, viewport camera, focus viewport, material assignment (StaticMesh + SkeletalMesh), actor tags, PIE movement input, pawn actions (jump/crouch/launch), viewport screenshots with grid sequences, Editor Utility Widget tab management |
+| **Blueprints** | 13 | Create Blueprint classes, add/configure/reparent/remove components, set properties, physics, pawn properties, compile with error reporting, **blueprint introspection** (inspect variables/functions/components/interfaces/event graph), **graph analysis** (nodes/pins/connections), **metadata management** |
+| **Blueprint Nodes** | 18 | Events, functions, flow control (branch/loop/delay/timer/print), custom events, math ops, variables (get/set/add/remove/change type), pin defaults, self/component references, node connections, node deletion, **function management** (create/delete/rename), **function parameters** (add inputs/outputs) |
+| **Level** | 9 | Create/load/save levels, Play-In-Editor (start/stop/query), console commands, build lighting, world settings, **execute Python** in UE's embedded interpreter |
+| **Materials** | 11 | Create materials and instances, scalar/vector/texture parameters, 30+ material expression types, expression property editing, node connections, apply to actors, recompile, **get material info** (blend mode, shading model, parameters) |
 | **Assets** | 10 | List/find/duplicate/delete/rename/import/save/open assets, create folders, existence checks |
 | **Project** | 7 | Game mode, default maps, Enhanced Input actions and mapping contexts, project settings (read/write) |
 | **UMG Widgets** | 6 | Create widget blueprints, text blocks, buttons, event bindings, viewport display, property bindings |
 | **Animation** | 7 | Create AnimBPs, state machines, states, transitions, animation assignment, transition rules |
 | **Process** | 5 | Stop/start Unreal Editor process, check editor status, MCP result cache management |
+| **World Building** | 3 | Procedural structures (pyramid/wall/tower/staircase/arch/column/pillar_ring), buildings (house/tower/fortress), infrastructure (maze/bridge/aqueduct/arena/road) |
+| **User** | dynamic | Auto-discovered custom tools from `UserTools/*.py` |
 
 All capabilities are accessible through natural language commands via AI assistants.
 
@@ -94,20 +96,22 @@ Based on the Blank Project with the UnrealMCP plugin pre-configured.
 
 ## Tool Scopes
 
-To reduce context window usage, tools are organized into **10 scopes**. Only active scopes appear in the tool listing. By default, 4 scopes are active (~50 tools). Agents can activate additional scopes at runtime as needed.
+To reduce context window usage, tools are organized into **12 scopes**. Only active scopes appear in the tool listing. By default, 4 scopes are active (52 tools including 3 always-on scope management tools). Agents can activate additional scopes at runtime as needed.
 
 | Scope | Tools | Default | Description |
 |-------|:-----:|:-------:|-------------|
-| `editor` | 24 | Active | Actor CRUD, viewport, screenshots, editor utilities |
+| `editor` | 25 | Active | Actor CRUD, viewport, screenshots, editor utilities |
 | `assets` | 10 | Active | Content browser asset management |
-| `level` | 8 | Active | Levels, PIE, console, lighting, world settings |
+| `level` | 9 | Active | Levels, PIE, console, lighting, world settings, execute_python |
 | `process` | 5 | Active | Start/stop editor, cache management |
-| `blueprint` | 9 | — | Blueprint creation, components, compile |
-| `blueprint_nodes` | 16 | — | Node graph authoring |
-| `materials` | 10 | — | Material creation, expressions, params |
+| `blueprint` | 13 | — | Blueprint creation, components, compile, introspection, metadata |
+| `blueprint_nodes` | 18 | — | Node graph authoring, function management |
+| `materials` | 11 | — | Material creation, expressions, params, material info |
 | `animation` | 7 | — | AnimBP, state machines, transitions |
 | `umg` | 6 | — | Widget blueprints, buttons, text blocks |
 | `project` | 7 | — | Game mode, input, project settings |
+| `worldbuilding` | 3 | — | Procedural structures, buildings, infrastructure |
+| `user` | ? | — | Auto-discovered from `UserTools/*.py` |
 
 Three always-on tools manage scopes: `activate_tool_scope`, `deactivate_tool_scope`, `list_tool_scopes`.
 
@@ -152,15 +156,18 @@ Python/                                  # Python MCP server
   pyproject.toml                         # Dependencies (FastMCP 3.x)
   tools/
     editor_tools.py                      # Actor management, viewport, PIE/RL
-    blueprint_tools.py                   # Blueprint class creation
-    node_tools.py                        # Blueprint node graph authoring
-    level_tools.py                       # Level management, PIE
-    material_tools.py                    # Material creation and editing
+    blueprint_tools.py                   # Blueprint creation, introspection, metadata
+    node_tools.py                        # Blueprint node graph, function management
+    level_tools.py                       # Level management, PIE, execute_python
+    material_tools.py                    # Material creation, editing, info
     asset_tools.py                       # Asset management
     project_tools.py                     # Project settings, Enhanced Input
     umg_tools.py                         # UMG Widget Blueprints
     anim_tools.py                        # Animation Blueprints
     process_tools.py                     # Editor process lifecycle, cache tools
+    worldbuilding_tools.py               # Procedural structures, buildings, infra
+  UserTools/                             # Drop-in custom tool extensions
+    README.md                            # Convention documentation
 
 docker-compose.yml                       # Docker Compose for SSE deployment
 mcp.json                                 # Example MCP client configurations
@@ -258,7 +265,7 @@ Add the following to your MCP configuration:
 
 ## Tool Reference
 
-### Editor Tools (24)
+### Editor Tools (25)
 
 | Tool | Description |
 |------|-------------|
@@ -275,6 +282,7 @@ Add the following to your MCP configuration:
 | `duplicate_actor` | Duplicate an actor with optional new location |
 | `set_viewport_camera` | Set editor viewport camera position and rotation |
 | `get_viewport_camera` | Get current viewport camera transform |
+| `focus_viewport` | Focus the viewport camera on a specific actor |
 | `set_actor_mobility` | Set mobility (Static, Stationary, Movable) |
 | `set_actor_material` | Set material on StaticMesh or SkeletalMesh components |
 | `set_actor_tags` | Set, add, or remove actor tags (for RL identification, etc.) |
@@ -287,7 +295,7 @@ Add the following to your MCP configuration:
 | `editor_utility_tab` | Manage Editor Utility Widget tabs (action: "spawn", "close", or "exists") |
 | `find_editor_utility_widget` | Find the widget instance from a spawned Editor Utility tab |
 
-### Blueprint Tools (9)
+### Blueprint Tools (13)
 
 | Tool | Description |
 |------|-------------|
@@ -298,10 +306,14 @@ Add the following to your MCP configuration:
 | `set_physics_properties` | Configure physics (simulate, mass, damping, gravity) |
 | `compile_blueprint` | Compile a Blueprint (returns errors and warnings) |
 | `set_blueprint_property` | Set a property on the Blueprint class defaults (CDO) |
+| `set_pawn_properties` | Set pawn-specific properties (use nav mesh, AI controller class, auto-possess) |
 | `reparent_blueprint_component` | Reparent (attach) a component to a different parent component |
 | `remove_blueprint_component` | Remove a component from a Blueprint (optionally promotes children) |
+| `inspect_blueprint` | Inspect a Blueprint's variables, functions, components, interfaces, event graph, and metadata |
+| `analyze_blueprint_graph` | Deep analysis of a graph — all nodes, pins, connections, and execution flow |
+| `set_blueprint_metadata` | Set category, description, namespace, display name, abstract/deprecated flags |
 
-### Blueprint Node Tools (16)
+### Blueprint Node Tools (18)
 
 | Tool | Description |
 |------|-------------|
@@ -321,8 +333,10 @@ Add the following to your MCP configuration:
 | `remove_blueprint_variable` | Remove a variable from a Blueprint |
 | `change_blueprint_variable_type` | Change a variable's type |
 | `delete_blueprint_node` | Delete a node from a Blueprint graph by ID |
+| `blueprint_function` | Manage functions (action: "create", "delete", or "rename") with access level, pure, category |
+| `blueprint_function_param` | Add input/output parameters to a function (direction: "input" or "output") |
 
-### Level Tools (8)
+### Level Tools (9)
 
 | Tool | Description |
 |------|-------------|
@@ -334,8 +348,9 @@ Add the following to your MCP configuration:
 | `execute_console_command` | Run a console command (e.g., `stat fps`) |
 | `build_lighting` | Build lighting (Preview, Medium, High, Production) |
 | `set_world_settings` | Set game mode, kill Z, etc. |
+| `execute_python` | Execute Python code in UE's embedded interpreter (access to `unreal` module) |
 
-### Material Tools (10)
+### Material Tools (11)
 
 | Tool | Description |
 |------|-------------|
@@ -349,6 +364,7 @@ Add the following to your MCP configuration:
 | `recompile_material` | Recompile a material after graph changes |
 | `set_material_expression_property` | Set a property on an expression node (texture, atlas, mask flags, etc.) |
 | `get_material_expressions` | List all expression nodes in a material with index, name, class, and caption |
+| `get_material_info` | Get detailed info about a material or instance (blend mode, shading model, parameters) |
 
 ### Asset Tools (10)
 
@@ -411,6 +427,34 @@ Add the following to your MCP configuration:
 | `get_mcp_cache_stats` | Return cache hit/miss statistics and current entry counts |
 
 > **Note**: `stop_unreal_editor` and `start_unreal_editor` are unavailable when running in a Docker container (Linux). `is_unreal_editor_running` falls back to a TCP port check in container mode.
+
+### World Building Tools (3)
+
+| Tool | Description |
+|------|-------------|
+| `build_basic_structure` | Build geometric structures (type: "pyramid", "wall", "tower", "staircase", "arch", "column", "pillar_ring") |
+| `build_building` | Build multi-floor buildings (type: "house", "tower_building", "fortress") |
+| `build_infrastructure` | Build infrastructure (type: "maze", "bridge", "aqueduct", "arena", "road") |
+
+All world building tools accept `location`, `scale`, `material_path`, and structure-specific parameters (height, width, floors, segments, complexity). They compose primitives using existing `spawn_actor` commands.
+
+### User Tools (dynamic)
+
+Drop `.py` files in `Python/UserTools/` to add custom tools. Each file must define a `register_tools(mcp)` function. Activate with `activate_tool_scope("user")`. See `Python/UserTools/README.md` for the convention.
+
+## C++ Extension System
+
+Other Unreal plugins can register custom MCP command handlers at runtime without modifying the UnrealMCP plugin:
+
+```cpp
+// In your plugin's StartupModule():
+auto* Bridge = GEditor->GetEditorSubsystem<UUnrealMCPBridge>();
+Bridge->RegisterExtensionHandler("myprefix_", FMCPCommandHandler::CreateLambda(
+    [](const FString& CommandType, const TSharedPtr<FJsonObject>& Params) -> TSharedPtr<FJsonObject> {
+        // Handle commands starting with "myprefix_"
+        return MakeShared<FJsonObject>();
+    }));
+```
 
 ## Docker Deployment
 
@@ -517,3 +561,5 @@ MIT
 
 - Original project by [@chongdashu](https://www.x.com/chongdashu)
 - Fork expansions by [@mscrnt](https://github.com/mscrnt)
+- Inspired by [kvick-games/UnrealMCP](https://github.com/kvick-games/UnrealMCP) — execute_python, C++ extension system, UserTools auto-discovery concepts
+- Inspired by [flopperam/unreal-engine-mcp](https://github.com/flopperam/unreal-engine-mcp) — blueprint introspection, function management, world building concepts

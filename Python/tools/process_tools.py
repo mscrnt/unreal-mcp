@@ -2,8 +2,15 @@
 Process Tools for Unreal MCP.
 
 OS-level tools for managing the Unreal Editor process lifecycle.
-These tools operate independently of the TCP connection — they use
-subprocess/taskkill to start and stop the editor process.
+
+Detection strategy (in priority order):
+  1. TCP port check — works in ALL environments (stdio, Docker, Git Bash, WSL)
+  2. UnrealConnection state — if main connection is alive, editor is up
+  3. OS process check — tasklist / PowerShell (may fail in non-native shells)
+
+Shutdown strategy (in priority order):
+  1. TCP command: unreal.SystemLibrary.quit_editor() — clean, no save dialog
+  2. OS process kill: taskkill / Stop-Process — forceful fallback
 """
 
 import logging
@@ -26,20 +33,124 @@ _cached_editor_path: Optional[str] = None
 _cached_project_path: Optional[str] = None
 
 
-def _is_editor_running() -> bool:
-    """Check if UnrealEditor.exe is currently running."""
+def _get_mcp_host_port() -> tuple:
+    """Get the MCP host and port from environment or defaults."""
+    host = os.environ.get("UNREAL_HOST", "127.0.0.1")
+    port = int(os.environ.get("UNREAL_PORT", "55557"))
+    return host, port
+
+
+def _is_port_open(host: str = None, port: int = None, timeout: float = 2.0) -> bool:
+    """Check if the MCP TCP port is accepting connections.
+    This is the most reliable detection method — works in all environments."""
+    if host is None or port is None:
+        h, p = _get_mcp_host_port()
+        host = host or h
+        port = port or p
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect((host, port))
+            return True
+    except (socket.timeout, ConnectionRefusedError, OSError):
+        return False
+
+
+def _is_editor_process_running() -> bool:
+    """Check if UnrealEditor.exe process exists at the OS level.
+    May fail in non-native shells (Git Bash, WSL). Use _is_port_open() as primary."""
+    if _IS_CONTAINER:
+        return False  # Can't detect host processes from inside Docker
+
+    # Method 1: tasklist
     try:
         result = subprocess.run(
             ['tasklist', '/FI', 'IMAGENAME eq UnrealEditor.exe', '/NH'],
             capture_output=True, text=True, timeout=10
         )
-        return 'UnrealEditor.exe' in result.stdout
+        if 'UnrealEditor.exe' in result.stdout:
+            return True
     except Exception:
+        pass
+
+    # Method 2: PowerShell Get-Process
+    try:
+        result = subprocess.run(
+            ['powershell', '-NoProfile', '-Command',
+             '(Get-Process -Name UnrealEditor -ErrorAction SilentlyContinue) -ne $null'],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.stdout.strip().lower() == 'true':
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _is_editor_running() -> bool:
+    """Check if the Unreal Editor is running using all available methods.
+    TCP port check is primary; OS process check is supplementary."""
+    # Primary: TCP port check (works everywhere)
+    if _is_port_open():
+        return True
+    # Fallback: OS process check (may fail in some shells)
+    return _is_editor_process_running()
+
+
+def _kill_editor_process() -> bool:
+    """Attempt to kill the editor process at the OS level.
+    Returns True if successful."""
+    if _IS_CONTAINER:
         return False
+
+    # Method 1: taskkill
+    try:
+        result = subprocess.run(
+            ['taskkill', '/F', '/IM', 'UnrealEditor.exe'],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    # Method 2: PowerShell Stop-Process
+    try:
+        result = subprocess.run(
+            ['powershell', '-NoProfile', '-Command',
+             'Stop-Process -Name UnrealEditor -Force -ErrorAction SilentlyContinue; $true'],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.stdout.strip().lower() == 'true':
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _quit_via_tcp() -> bool:
+    """Send quit command to the editor via TCP bridge.
+    Most reliable shutdown method — no save dialog, works in all environments."""
+    try:
+        from unreal_mcp_server import get_unreal_connection
+        conn = get_unreal_connection()
+        if conn and conn.connected:
+            result = conn.send_command("execute_python", {
+                "code": "import unreal; unreal.SystemLibrary.quit_editor()"
+            })
+            logger.info("Sent quit_editor() via TCP bridge")
+            return True
+    except Exception as e:
+        logger.warning(f"TCP quit failed: {e}")
+    return False
 
 
 def _get_running_editor_info() -> Dict[str, Optional[str]]:
     """Get the executable path and project path from a running UnrealEditor process."""
+    if _IS_CONTAINER:
+        return {"editor_path": None, "project_path": None}
     try:
         result = subprocess.run(
             ['powershell', '-NoProfile', '-Command',
@@ -51,22 +162,18 @@ def _get_running_editor_info() -> Dict[str, Optional[str]]:
         if result.returncode == 0 and result.stdout.strip():
             import json
             data = json.loads(result.stdout)
-            # PowerShell returns a single object or array
             if isinstance(data, list):
                 data = data[0]
 
             editor_path = data.get("ExecutablePath")
             cmd_line = data.get("CommandLine", "")
 
-            # Extract .uproject path from command line
             project_path = None
-            # Check for quoted paths first
             import re
             matches = re.findall(r'"([^"]+\.uproject)"', cmd_line)
             if matches:
                 project_path = matches[0]
             else:
-                # Check unquoted
                 for token in cmd_line.split():
                     if token.endswith('.uproject'):
                         project_path = token
@@ -80,7 +187,6 @@ def _get_running_editor_info() -> Dict[str, Optional[str]]:
 
 def _find_uproject_file() -> Optional[str]:
     """Find a .uproject file relative to this Python server's directory."""
-    # Go up from tools/ -> Python/ -> repo root
     repo_root = Path(__file__).resolve().parent.parent.parent
     for uproject in sorted(repo_root.glob("*/*.uproject")):
         return str(uproject)
@@ -109,15 +215,15 @@ def _find_ue_editor() -> Optional[str]:
     return None
 
 
-def _is_port_open(host: str = "127.0.0.1", port: int = 55557, timeout: float = 2.0) -> bool:
-    """Check if the MCP TCP port is accepting connections."""
+def _reset_tcp_connection():
+    """Reset the cached TCP connection so the next tool call reconnects."""
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            s.connect((host, port))
-            return True
-    except (socket.timeout, ConnectionRefusedError, OSError):
-        return False
+        import unreal_mcp_server
+        if unreal_mcp_server._unreal_connection:
+            unreal_mcp_server._unreal_connection.disconnect()
+            unreal_mcp_server._unreal_connection = None
+    except Exception:
+        pass
 
 
 def register_process_tools(mcp: FastMCP):
@@ -148,7 +254,7 @@ def register_process_tools(mcp: FastMCP):
         if not _is_editor_running():
             return {"success": False, "message": "Unreal Editor is not running"}
 
-        # Cache paths from the running process before killing it
+        # Cache paths from the running process before stopping
         info = _get_running_editor_info()
         if info["editor_path"]:
             _cached_editor_path = info["editor_path"]
@@ -159,45 +265,60 @@ def register_process_tools(mcp: FastMCP):
         if save:
             try:
                 from unreal_mcp_server import get_unreal_connection
-                unreal = get_unreal_connection()
-                if unreal:
-                    unreal.send_command("save_all_levels", {})
+                conn = get_unreal_connection()
+                if conn and conn.connected:
+                    conn.send_command("save_all_levels", {})
                     logger.info("Saved all levels before stopping editor")
             except Exception as e:
                 logger.warning(f"Could not save before stopping: {e}")
 
-        # Kill the process
-        try:
-            subprocess.run(
-                ['taskkill', '/F', '/IM', 'UnrealEditor.exe'],
-                capture_output=True, text=True, timeout=30
-            )
+        # Strategy 1: Graceful quit via TCP (most reliable, no save dialog)
+        tcp_quit_sent = _quit_via_tcp()
 
-            # Wait for process to exit (usually immediate with /F)
-            for _ in range(15):
-                if not _is_editor_running():
-                    break
+        if tcp_quit_sent:
+            # Wait for editor to exit after TCP quit
+            for i in range(20):  # Up to 20 seconds
                 time.sleep(1)
+                if not _is_port_open(timeout=1.0):
+                    # Port closed = editor shut down
+                    _reset_tcp_connection()
+                    return {
+                        "success": True,
+                        "message": "Unreal Editor stopped (graceful quit)",
+                        "method": "tcp_quit_editor",
+                        "cached_editor_path": _cached_editor_path,
+                        "cached_project_path": _cached_project_path,
+                    }
 
-            if _is_editor_running():
-                return {"success": False, "message": "Editor process did not exit after 15 seconds"}
+            # TCP quit was sent but editor hasn't closed yet — fall through to force kill
+            logger.warning("TCP quit_editor sent but editor still running after 20s, trying force kill")
 
-            # Reset the cached TCP connection
-            try:
-                import unreal_mcp_server
-                if unreal_mcp_server._unreal_connection:
-                    unreal_mcp_server._unreal_connection.disconnect()
-                    unreal_mcp_server._unreal_connection = None
-            except Exception:
-                pass
+        # Strategy 2: Force kill via OS (fallback)
+        try:
+            killed = _kill_editor_process()
+            if killed:
+                # Wait for process to fully exit
+                for _ in range(10):
+                    if not _is_port_open(timeout=1.0) and not _is_editor_process_running():
+                        break
+                    time.sleep(1)
 
-            return {
-                "success": True,
-                "message": "Unreal Editor stopped",
-                "cached_editor_path": _cached_editor_path,
-                "cached_project_path": _cached_project_path,
-                "note": "Use start_unreal_editor to relaunch. Cached paths will be used automatically."
-            }
+            _reset_tcp_connection()
+
+            if not _is_port_open(timeout=1.0):
+                return {
+                    "success": True,
+                    "message": "Unreal Editor stopped (force kill)",
+                    "method": "process_kill",
+                    "cached_editor_path": _cached_editor_path,
+                    "cached_project_path": _cached_project_path,
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "Editor process did not exit after TCP quit and force kill attempts. "
+                               "The port is still responding. Try closing the editor manually."
+                }
         except Exception as e:
             return {"success": False, "message": f"Failed to stop editor: {e}"}
 
@@ -229,7 +350,8 @@ def register_process_tools(mcp: FastMCP):
             }
 
         if _is_editor_running():
-            if _is_port_open():
+            port_open = _is_port_open()
+            if port_open:
                 return {"success": True, "message": "Unreal Editor is already running and MCP is connected"}
             else:
                 return {
@@ -290,15 +412,13 @@ def register_process_tools(mcp: FastMCP):
         start_time = time.time()
         while time.time() - start_time < timeout:
             if _is_port_open():
-                # Reset connection state so next tool call creates a fresh connection
+                _reset_tcp_connection()
+                # Clear any previous crash state
                 try:
-                    import unreal_mcp_server
-                    if unreal_mcp_server._unreal_connection:
-                        unreal_mcp_server._unreal_connection.disconnect()
-                        unreal_mcp_server._unreal_connection = None
-                except Exception:
+                    from unreal_mcp_server import clear_crash_state
+                    clear_crash_state()
+                except ImportError:
                     pass
-
                 return {
                     "success": True,
                     "message": "Unreal Editor is running and MCP connection is ready",
@@ -308,8 +428,8 @@ def register_process_tools(mcp: FastMCP):
                 }
             time.sleep(3)
 
-        # Timed out but editor may still be loading
-        if _is_editor_running():
+        # Timed out
+        if _is_editor_process_running():
             return {
                 "success": False,
                 "message": f"Editor is running but MCP TCP port not available after {timeout}s. "
@@ -332,8 +452,7 @@ def register_process_tools(mcp: FastMCP):
         and whether the MCP TCP connection is available.
         """
         if _IS_CONTAINER:
-            host = os.environ.get("UNREAL_HOST", "127.0.0.1")
-            port = int(os.environ.get("UNREAL_PORT", "55557"))
+            host, port = _get_mcp_host_port()
             port_open = _is_port_open(host=host, port=port)
             return {
                 "running": "unknown (container mode)",
@@ -342,15 +461,30 @@ def register_process_tools(mcp: FastMCP):
                         "TCP connectivity to UE plugin is the only check available."
             }
 
-        running = _is_editor_running()
-        port_open = _is_port_open() if running else False
+        # Always check TCP first (most reliable)
+        port_open = _is_port_open()
+        # Also check OS process (supplementary info)
+        process_running = _is_editor_process_running()
 
-        return {
-            "running": running,
+        result = {
+            "running": port_open or process_running,
             "mcp_connected": port_open,
             "cached_editor_path": _cached_editor_path,
             "cached_project_path": _cached_project_path
         }
+
+        # If editor is not running, check for crash
+        if not port_open and not process_running:
+            try:
+                from unreal_mcp_server import check_for_editor_crash
+                crash_info = check_for_editor_crash()
+                if crash_info:
+                    result["crashed"] = True
+                    result["crash_info"] = crash_info
+            except ImportError:
+                pass
+
+        return result
 
     @mcp.tool()
     def clear_mcp_cache(ctx: Context) -> Dict[str, Any]:

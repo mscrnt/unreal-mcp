@@ -6,6 +6,8 @@
 #include "Factories/BlueprintFactory.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_Event.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "Components/StaticMeshComponent.h"
@@ -37,8 +39,11 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString
     // Blueprint editing during PIE causes crashes — PostEditChangeProperty,
     // MarkBlueprintAsModified, and compile all trigger TEDS/editor subsystems
     // that aren't stable during gameplay. Block all blueprint modifications.
-    // spawn_blueprint_actor is excluded since it just spawns from an existing BP.
-    if (GEditor && GEditor->IsPlayingSessionInEditor() && CommandType != TEXT("spawn_blueprint_actor"))
+    // Read-only commands and spawn_blueprint_actor are excluded.
+    if (GEditor && GEditor->IsPlayingSessionInEditor()
+        && CommandType != TEXT("spawn_blueprint_actor")
+        && CommandType != TEXT("inspect_blueprint")
+        && CommandType != TEXT("analyze_blueprint_graph"))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(
             TEXT("Cannot modify Blueprints while Play-In-Editor is active. "
@@ -88,6 +93,18 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString
     else if (CommandType == TEXT("remove_blueprint_component"))
     {
         return HandleRemoveBlueprintComponent(Params);
+    }
+    else if (CommandType == TEXT("inspect_blueprint"))
+    {
+        return HandleInspectBlueprint(Params);
+    }
+    else if (CommandType == TEXT("analyze_blueprint_graph"))
+    {
+        return HandleAnalyzeBlueprintGraph(Params);
+    }
+    else if (CommandType == TEXT("set_blueprint_metadata"))
+    {
+        return HandleSetBlueprintMetadata(Params);
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
@@ -1652,5 +1669,601 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleRemoveBlueprintCompon
     ResultObj->SetStringField(TEXT("component_type"), ComponentType);
     ResultObj->SetBoolField(TEXT("children_promoted"), bPromoteChildren && NumChildren > 0);
     ResultObj->SetNumberField(TEXT("child_count"), NumChildren);
+    return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ============================================================
+// Inspect Blueprint — comprehensive read-only blueprint reader
+// ============================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleInspectBlueprint(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    // Read optional section flags (all default to false except metadata)
+    bool bIncludeMetadata = true;
+    Params->TryGetBoolField(TEXT("include_metadata"), bIncludeMetadata);
+
+    bool bIncludeVariables = false;
+    Params->TryGetBoolField(TEXT("include_variables"), bIncludeVariables);
+
+    bool bIncludeFunctions = false;
+    Params->TryGetBoolField(TEXT("include_functions"), bIncludeFunctions);
+
+    bool bIncludeComponents = false;
+    Params->TryGetBoolField(TEXT("include_components"), bIncludeComponents);
+
+    bool bIncludeInterfaces = false;
+    Params->TryGetBoolField(TEXT("include_interfaces"), bIncludeInterfaces);
+
+    bool bIncludeEventGraph = false;
+    Params->TryGetBoolField(TEXT("include_event_graph"), bIncludeEventGraph);
+
+    // Optional drill-down filters
+    FString VariableNameFilter;
+    Params->TryGetStringField(TEXT("variable_name"), VariableNameFilter);
+
+    FString FunctionNameFilter;
+    Params->TryGetStringField(TEXT("function_name"), FunctionNameFilter);
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("name"), BlueprintName);
+
+    // ---- Metadata ----
+    if (bIncludeMetadata)
+    {
+        TSharedPtr<FJsonObject> MetaObj = MakeShared<FJsonObject>();
+        MetaObj->SetStringField(TEXT("parent_class"), Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT("None"));
+        MetaObj->SetStringField(TEXT("category"), Blueprint->BlueprintCategory);
+        MetaObj->SetStringField(TEXT("description"), Blueprint->BlueprintDescription);
+        MetaObj->SetStringField(TEXT("namespace"), Blueprint->BlueprintNamespace);
+        MetaObj->SetStringField(TEXT("display_name"), Blueprint->BlueprintDisplayName);
+        MetaObj->SetBoolField(TEXT("is_abstract"), Blueprint->bGenerateAbstractClass != 0);
+        MetaObj->SetBoolField(TEXT("is_deprecated"), Blueprint->bDeprecate != 0);
+
+        // Blueprint type
+        switch (Blueprint->BlueprintType)
+        {
+        case BPTYPE_Normal:          MetaObj->SetStringField(TEXT("blueprint_type"), TEXT("Normal")); break;
+        case BPTYPE_Const:           MetaObj->SetStringField(TEXT("blueprint_type"), TEXT("Const")); break;
+        case BPTYPE_MacroLibrary:    MetaObj->SetStringField(TEXT("blueprint_type"), TEXT("MacroLibrary")); break;
+        case BPTYPE_Interface:       MetaObj->SetStringField(TEXT("blueprint_type"), TEXT("Interface")); break;
+        case BPTYPE_LevelScript:     MetaObj->SetStringField(TEXT("blueprint_type"), TEXT("LevelScript")); break;
+        case BPTYPE_FunctionLibrary: MetaObj->SetStringField(TEXT("blueprint_type"), TEXT("FunctionLibrary")); break;
+        default:                     MetaObj->SetStringField(TEXT("blueprint_type"), TEXT("Unknown")); break;
+        }
+
+        // Compile status
+        switch (Blueprint->Status)
+        {
+        case BS_Error:                  MetaObj->SetStringField(TEXT("compile_status"), TEXT("error")); break;
+        case BS_UpToDate:               MetaObj->SetStringField(TEXT("compile_status"), TEXT("up_to_date")); break;
+        case BS_UpToDateWithWarnings:   MetaObj->SetStringField(TEXT("compile_status"), TEXT("up_to_date_with_warnings")); break;
+        case BS_Dirty:                  MetaObj->SetStringField(TEXT("compile_status"), TEXT("dirty")); break;
+        default:                        MetaObj->SetStringField(TEXT("compile_status"), TEXT("unknown")); break;
+        }
+
+        ResultObj->SetObjectField(TEXT("metadata"), MetaObj);
+    }
+
+    // ---- Variables ----
+    if (bIncludeVariables)
+    {
+        TArray<TSharedPtr<FJsonValue>> VarArray;
+
+        for (const FBPVariableDescription& Var : Blueprint->NewVariables)
+        {
+            // If a variable_name filter is provided, skip non-matching
+            if (!VariableNameFilter.IsEmpty() && Var.VarName.ToString() != VariableNameFilter)
+            {
+                continue;
+            }
+
+            TSharedPtr<FJsonObject> VarObj = MakeShared<FJsonObject>();
+            VarObj->SetStringField(TEXT("name"), Var.VarName.ToString());
+            VarObj->SetStringField(TEXT("type"), Var.VarType.PinCategory.ToString());
+
+            if (!Var.VarType.PinSubCategory.IsNone())
+            {
+                VarObj->SetStringField(TEXT("sub_type"), Var.VarType.PinSubCategory.ToString());
+            }
+
+            if (Var.VarType.PinSubCategoryObject.IsValid())
+            {
+                VarObj->SetStringField(TEXT("sub_type_object"), Var.VarType.PinSubCategoryObject->GetName());
+            }
+
+            VarObj->SetBoolField(TEXT("is_array"), Var.VarType.ContainerType == EPinContainerType::Array);
+            VarObj->SetBoolField(TEXT("is_set"), Var.VarType.ContainerType == EPinContainerType::Set);
+            VarObj->SetBoolField(TEXT("is_map"), Var.VarType.ContainerType == EPinContainerType::Map);
+            VarObj->SetStringField(TEXT("default_value"), Var.DefaultValue);
+
+            // Property flags
+            VarObj->SetBoolField(TEXT("editable"), (Var.PropertyFlags & CPF_Edit) != 0);
+            VarObj->SetBoolField(TEXT("blueprint_visible"), (Var.PropertyFlags & CPF_BlueprintVisible) != 0);
+            VarObj->SetBoolField(TEXT("instance_editable"), (Var.PropertyFlags & CPF_Edit) != 0 && (Var.PropertyFlags & CPF_DisableEditOnInstance) == 0);
+            VarObj->SetBoolField(TEXT("blueprint_read_only"), (Var.PropertyFlags & CPF_BlueprintReadOnly) != 0);
+            VarObj->SetBoolField(TEXT("expose_on_spawn"), (Var.PropertyFlags & CPF_ExposeOnSpawn) != 0);
+            VarObj->SetBoolField(TEXT("replicated"), (Var.PropertyFlags & CPF_Net) != 0);
+
+            // RepNotify
+            if (!Var.RepNotifyFunc.IsNone())
+            {
+                VarObj->SetStringField(TEXT("rep_notify_func"), Var.RepNotifyFunc.ToString());
+            }
+
+            // Metadata (Category, Tooltip, etc.)
+            if (Var.HasMetaData(FName(TEXT("Category"))))
+            {
+                VarObj->SetStringField(TEXT("category"), Var.GetMetaData(FName(TEXT("Category"))));
+            }
+            if (Var.HasMetaData(FName(TEXT("Tooltip"))))
+            {
+                VarObj->SetStringField(TEXT("tooltip"), Var.GetMetaData(FName(TEXT("Tooltip"))));
+            }
+
+            VarArray.Add(MakeShared<FJsonValueObject>(VarObj));
+        }
+
+        ResultObj->SetArrayField(TEXT("variables"), VarArray);
+    }
+
+    // ---- Functions ----
+    if (bIncludeFunctions)
+    {
+        TArray<TSharedPtr<FJsonValue>> FuncArray;
+
+        for (UEdGraph* FuncGraph : Blueprint->FunctionGraphs)
+        {
+            if (!FuncGraph) continue;
+
+            // If a function_name filter is provided, skip non-matching
+            if (!FunctionNameFilter.IsEmpty() && FuncGraph->GetName() != FunctionNameFilter)
+            {
+                continue;
+            }
+
+            TSharedPtr<FJsonObject> FuncObj = MakeShared<FJsonObject>();
+            FuncObj->SetStringField(TEXT("name"), FuncGraph->GetName());
+            FuncObj->SetNumberField(TEXT("node_count"), FuncGraph->Nodes.Num());
+
+            // Find FunctionEntry node to get input parameters
+            TArray<TSharedPtr<FJsonValue>> InputArray;
+            TArray<TSharedPtr<FJsonValue>> OutputArray;
+
+            for (UEdGraphNode* Node : FuncGraph->Nodes)
+            {
+                if (UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(Node))
+                {
+                    // Output pins on the entry node are the function's input parameters
+                    for (UEdGraphPin* Pin : EntryNode->Pins)
+                    {
+                        if (Pin->Direction == EGPD_Output && Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+                        {
+                            TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+                            PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+                            PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+                            if (Pin->PinType.PinSubCategoryObject.IsValid())
+                            {
+                                PinObj->SetStringField(TEXT("sub_type"), Pin->PinType.PinSubCategoryObject->GetName());
+                            }
+                            InputArray.Add(MakeShared<FJsonValueObject>(PinObj));
+                        }
+                    }
+                }
+                else if (UK2Node_FunctionResult* ResultNode = Cast<UK2Node_FunctionResult>(Node))
+                {
+                    // Input pins on the result node are the function's output parameters
+                    for (UEdGraphPin* Pin : ResultNode->Pins)
+                    {
+                        if (Pin->Direction == EGPD_Input && Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+                        {
+                            TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+                            PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+                            PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+                            if (Pin->PinType.PinSubCategoryObject.IsValid())
+                            {
+                                PinObj->SetStringField(TEXT("sub_type"), Pin->PinType.PinSubCategoryObject->GetName());
+                            }
+                            OutputArray.Add(MakeShared<FJsonValueObject>(PinObj));
+                        }
+                    }
+                }
+            }
+
+            FuncObj->SetArrayField(TEXT("inputs"), InputArray);
+            FuncObj->SetArrayField(TEXT("outputs"), OutputArray);
+
+            // If drill-down mode, also include a full node list
+            if (!FunctionNameFilter.IsEmpty())
+            {
+                TArray<TSharedPtr<FJsonValue>> NodeArray;
+                for (UEdGraphNode* Node : FuncGraph->Nodes)
+                {
+                    if (!Node) continue;
+                    TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+                    NodeObj->SetStringField(TEXT("name"), Node->GetNodeTitle(ENodeTitleType::ListView).ToString());
+                    NodeObj->SetStringField(TEXT("class"), Node->GetClass()->GetName());
+                    NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
+                    NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
+                    if (!Node->NodeComment.IsEmpty())
+                    {
+                        NodeObj->SetStringField(TEXT("comment"), Node->NodeComment);
+                    }
+                    NodeArray.Add(MakeShared<FJsonValueObject>(NodeObj));
+                }
+                FuncObj->SetArrayField(TEXT("nodes"), NodeArray);
+            }
+
+            FuncArray.Add(MakeShared<FJsonValueObject>(FuncObj));
+        }
+
+        ResultObj->SetArrayField(TEXT("functions"), FuncArray);
+    }
+
+    // ---- Components ----
+    if (bIncludeComponents)
+    {
+        TArray<TSharedPtr<FJsonValue>> CompArray;
+
+        if (Blueprint->SimpleConstructionScript)
+        {
+            for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+            {
+                if (!Node) continue;
+
+                TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
+                CompObj->SetStringField(TEXT("name"), Node->GetVariableName().ToString());
+                CompObj->SetStringField(TEXT("class"), Node->ComponentTemplate ? Node->ComponentTemplate->GetClass()->GetName() : TEXT("None"));
+
+                // Parent info
+                USCS_Node* ParentNode = nullptr;
+                for (USCS_Node* PotentialParent : Blueprint->SimpleConstructionScript->GetAllNodes())
+                {
+                    if (PotentialParent != Node && PotentialParent->GetChildNodes().Contains(Node))
+                    {
+                        ParentNode = PotentialParent;
+                        break;
+                    }
+                }
+                if (ParentNode)
+                {
+                    CompObj->SetStringField(TEXT("parent"), ParentNode->GetVariableName().ToString());
+                }
+                else
+                {
+                    CompObj->SetStringField(TEXT("parent"), TEXT("(root)"));
+                }
+
+                // Child count
+                CompObj->SetNumberField(TEXT("child_count"), Node->GetChildNodes().Num());
+
+                CompArray.Add(MakeShared<FJsonValueObject>(CompObj));
+            }
+        }
+
+        ResultObj->SetArrayField(TEXT("components"), CompArray);
+    }
+
+    // ---- Interfaces ----
+    if (bIncludeInterfaces)
+    {
+        TArray<TSharedPtr<FJsonValue>> IntfArray;
+
+        for (const FBPInterfaceDescription& IntfDesc : Blueprint->ImplementedInterfaces)
+        {
+            TSharedPtr<FJsonObject> IntfObj = MakeShared<FJsonObject>();
+            IntfObj->SetStringField(TEXT("name"), IntfDesc.Interface ? IntfDesc.Interface->GetName() : TEXT("None"));
+            IntfObj->SetNumberField(TEXT("graph_count"), IntfDesc.Graphs.Num());
+
+            TArray<TSharedPtr<FJsonValue>> GraphNames;
+            for (UEdGraph* Graph : IntfDesc.Graphs)
+            {
+                if (Graph)
+                {
+                    GraphNames.Add(MakeShared<FJsonValueString>(Graph->GetName()));
+                }
+            }
+            IntfObj->SetArrayField(TEXT("graphs"), GraphNames);
+
+            IntfArray.Add(MakeShared<FJsonValueObject>(IntfObj));
+        }
+
+        ResultObj->SetArrayField(TEXT("interfaces"), IntfArray);
+    }
+
+    // ---- Event Graph ----
+    if (bIncludeEventGraph)
+    {
+        TArray<TSharedPtr<FJsonValue>> GraphArray;
+
+        for (UEdGraph* Graph : Blueprint->UbergraphPages)
+        {
+            if (!Graph) continue;
+
+            TSharedPtr<FJsonObject> GraphObj = MakeShared<FJsonObject>();
+            GraphObj->SetStringField(TEXT("name"), Graph->GetName());
+            GraphObj->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
+
+            // Find all event nodes
+            TArray<TSharedPtr<FJsonValue>> EventArray;
+            for (UEdGraphNode* Node : Graph->Nodes)
+            {
+                if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
+                {
+                    TSharedPtr<FJsonObject> EventObj = MakeShared<FJsonObject>();
+                    EventObj->SetStringField(TEXT("event_name"), EventNode->GetNodeTitle(ENodeTitleType::ListView).ToString());
+                    EventObj->SetStringField(TEXT("class"), EventNode->GetClass()->GetName());
+                    EventObj->SetNumberField(TEXT("pos_x"), EventNode->NodePosX);
+                    EventObj->SetNumberField(TEXT("pos_y"), EventNode->NodePosY);
+                    EventArray.Add(MakeShared<FJsonValueObject>(EventObj));
+                }
+            }
+            GraphObj->SetArrayField(TEXT("events"), EventArray);
+
+            GraphArray.Add(MakeShared<FJsonValueObject>(GraphObj));
+        }
+
+        ResultObj->SetArrayField(TEXT("event_graphs"), GraphArray);
+    }
+
+    return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ============================================================
+// Analyze Blueprint Graph — deep graph/node/pin/connection analysis
+// ============================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAnalyzeBlueprintGraph(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    FString GraphName;
+    Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+    // Find the requested graph
+    UEdGraph* TargetGraph = nullptr;
+
+    if (GraphName.IsEmpty() || GraphName.Equals(TEXT("EventGraph"), ESearchCase::IgnoreCase))
+    {
+        // Default: first UbergraphPage (the EventGraph)
+        if (Blueprint->UbergraphPages.Num() > 0)
+        {
+            TargetGraph = Blueprint->UbergraphPages[0];
+        }
+    }
+    else
+    {
+        // Search UbergraphPages first
+        for (UEdGraph* Graph : Blueprint->UbergraphPages)
+        {
+            if (Graph && Graph->GetName() == GraphName)
+            {
+                TargetGraph = Graph;
+                break;
+            }
+        }
+        // Then search FunctionGraphs
+        if (!TargetGraph)
+        {
+            for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+            {
+                if (Graph && Graph->GetName() == GraphName)
+                {
+                    TargetGraph = Graph;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!TargetGraph)
+    {
+        // List available graphs to help the user
+        TArray<FString> AvailableGraphs;
+        for (UEdGraph* Graph : Blueprint->UbergraphPages)
+        {
+            if (Graph) AvailableGraphs.Add(Graph->GetName());
+        }
+        for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+        {
+            if (Graph) AvailableGraphs.Add(Graph->GetName());
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Graph not found: '%s'. Available graphs: [%s]"),
+            *GraphName, *FString::Join(AvailableGraphs, TEXT(", "))));
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("blueprint"), BlueprintName);
+    ResultObj->SetStringField(TEXT("graph"), TargetGraph->GetName());
+    ResultObj->SetNumberField(TEXT("node_count"), TargetGraph->Nodes.Num());
+
+    // Build a map of node pointer -> stable index for connection referencing
+    TMap<UEdGraphNode*, int32> NodeIndexMap;
+    for (int32 i = 0; i < TargetGraph->Nodes.Num(); i++)
+    {
+        if (TargetGraph->Nodes[i])
+        {
+            NodeIndexMap.Add(TargetGraph->Nodes[i], i);
+        }
+    }
+
+    // ---- Nodes ----
+    TArray<TSharedPtr<FJsonValue>> NodeArray;
+    TArray<TSharedPtr<FJsonValue>> ConnectionArray;
+
+    for (int32 NodeIdx = 0; NodeIdx < TargetGraph->Nodes.Num(); NodeIdx++)
+    {
+        UEdGraphNode* Node = TargetGraph->Nodes[NodeIdx];
+        if (!Node) continue;
+
+        TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+        NodeObj->SetNumberField(TEXT("index"), NodeIdx);
+        NodeObj->SetStringField(TEXT("name"), Node->GetNodeTitle(ENodeTitleType::ListView).ToString());
+        NodeObj->SetStringField(TEXT("class"), Node->GetClass()->GetName());
+        NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
+        NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
+
+        if (!Node->NodeComment.IsEmpty())
+        {
+            NodeObj->SetStringField(TEXT("comment"), Node->NodeComment);
+        }
+
+        // ---- Pins ----
+        TArray<TSharedPtr<FJsonValue>> PinArray;
+
+        for (UEdGraphPin* Pin : Node->Pins)
+        {
+            if (!Pin) continue;
+
+            TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+            PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+            PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+            PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
+            PinObj->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
+
+            if (Pin->PinType.PinSubCategoryObject.IsValid())
+            {
+                PinObj->SetStringField(TEXT("sub_type"), Pin->PinType.PinSubCategoryObject->GetName());
+            }
+
+            PinArray.Add(MakeShared<FJsonValueObject>(PinObj));
+
+            // ---- Connections (from output pins only to avoid duplicates) ----
+            if (Pin->Direction == EGPD_Output)
+            {
+                for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+                {
+                    if (!LinkedPin || !LinkedPin->GetOwningNode()) continue;
+
+                    int32* TargetIdx = NodeIndexMap.Find(LinkedPin->GetOwningNode());
+                    if (!TargetIdx) continue;
+
+                    TSharedPtr<FJsonObject> ConnObj = MakeShared<FJsonObject>();
+                    ConnObj->SetNumberField(TEXT("from_node"), NodeIdx);
+                    ConnObj->SetStringField(TEXT("from_pin"), Pin->PinName.ToString());
+                    ConnObj->SetNumberField(TEXT("to_node"), *TargetIdx);
+                    ConnObj->SetStringField(TEXT("to_pin"), LinkedPin->PinName.ToString());
+
+                    ConnectionArray.Add(MakeShared<FJsonValueObject>(ConnObj));
+                }
+            }
+        }
+
+        NodeObj->SetArrayField(TEXT("pins"), PinArray);
+        NodeArray.Add(MakeShared<FJsonValueObject>(NodeObj));
+    }
+
+    ResultObj->SetArrayField(TEXT("nodes"), NodeArray);
+    ResultObj->SetArrayField(TEXT("connections"), ConnectionArray);
+
+    return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ============================================================
+// Set Blueprint Metadata — modify blueprint metadata fields
+// ============================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetBlueprintMetadata(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("blueprint"), BlueprintName);
+    bool bAnySet = false;
+
+    // Category
+    FString Category;
+    if (Params->TryGetStringField(TEXT("category"), Category))
+    {
+        Blueprint->BlueprintCategory = Category;
+        ResultObj->SetStringField(TEXT("category"), Category);
+        bAnySet = true;
+    }
+
+    // Description
+    FString Description;
+    if (Params->TryGetStringField(TEXT("description"), Description))
+    {
+        Blueprint->BlueprintDescription = Description;
+        ResultObj->SetStringField(TEXT("description"), Description);
+        bAnySet = true;
+    }
+
+    // Namespace
+    FString Namespace;
+    if (Params->TryGetStringField(TEXT("namespace"), Namespace))
+    {
+        Blueprint->BlueprintNamespace = Namespace;
+        ResultObj->SetStringField(TEXT("namespace"), Namespace);
+        bAnySet = true;
+    }
+
+    // Display name
+    FString DisplayName;
+    if (Params->TryGetStringField(TEXT("display_name"), DisplayName))
+    {
+        Blueprint->BlueprintDisplayName = DisplayName;
+        ResultObj->SetStringField(TEXT("display_name"), DisplayName);
+        bAnySet = true;
+    }
+
+    // Is abstract
+    bool bIsAbstract;
+    if (Params->TryGetBoolField(TEXT("is_abstract"), bIsAbstract))
+    {
+        Blueprint->bGenerateAbstractClass = bIsAbstract;
+        ResultObj->SetBoolField(TEXT("is_abstract"), bIsAbstract);
+        bAnySet = true;
+    }
+
+    // Is deprecated
+    bool bIsDeprecated;
+    if (Params->TryGetBoolField(TEXT("is_deprecated"), bIsDeprecated))
+    {
+        Blueprint->bDeprecate = bIsDeprecated;
+        ResultObj->SetBoolField(TEXT("is_deprecated"), bIsDeprecated);
+        bAnySet = true;
+    }
+
+    if (!bAnySet)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("No metadata fields specified. Provide at least one of: category, description, namespace, display_name, is_abstract, is_deprecated"));
+    }
+
+    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
     return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
 }

@@ -39,4 +39,9 @@ private:
      * Returns nullptr if not found, and fills OutDiagInfo with diagnostic details.
      */
     static UObject* FindBlueprintComponent(UBlueprint* Blueprint, const FString& ComponentName, FString& OutDiagInfo);
-}; 
+
+    // Blueprint introspection
+    TSharedPtr<FJsonObject> HandleInspectBlueprint(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAnalyzeBlueprintGraph(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSetBlueprintMetadata(const TSharedPtr<FJsonObject>& Params);
+};

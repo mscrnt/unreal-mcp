@@ -700,6 +700,10 @@ def register_editor_tools(mcp: FastMCP):
         Take a screenshot of the current viewport (editor or PIE game view).
         Returns the image directly so the AI can see what's happening.
 
+        IMPORTANT: After spawning or modifying actors, wait at least 2 seconds
+        before taking a screenshot. The editor viewport needs time to render
+        newly created geometry — screenshots taken immediately will show empty space.
+
         Args:
             filepath: Optional file path to save the PNG. If empty, uses a temp file.
         """

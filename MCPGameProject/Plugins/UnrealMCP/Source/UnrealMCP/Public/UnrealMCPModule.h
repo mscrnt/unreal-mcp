@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
+class SWindow;
+
 class FUnrealMCPModule : public IModuleInterface
 {
 public:
@@ -19,4 +21,22 @@ public:
 	{
 		return FModuleManager::Get().IsModuleLoaded("UnrealMCP");
 	}
-}; 
+
+private:
+	// Toolbar
+	void ExtendLevelEditorToolbar();
+
+	// Control panel
+	void OpenControlPanel();
+	FReply OnOpenControlPanelClicked();
+	void CloseControlPanel();
+	void OnControlPanelClosed(const TSharedRef<SWindow>& Window);
+	TSharedRef<class SWidget> CreateControlPanelContent();
+
+	// Server helpers
+	bool IsServerRunning() const;
+	FReply OnStartServerClicked();
+	FReply OnStopServerClicked();
+
+	TSharedPtr<SWindow> ControlPanelWindow;
+};

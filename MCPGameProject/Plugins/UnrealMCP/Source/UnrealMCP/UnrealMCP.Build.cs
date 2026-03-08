@@ -59,7 +59,8 @@ public class UnrealMCP : ModuleRules
 				"EnhancedInput",            // Enhanced Input System
 				"AnimGraph",                // Animation Blueprint graphs
 				"AnimGraphRuntime",         // Animation graph runtime nodes
-				"Blutility"                 // Editor Utility Widgets/Blueprints
+				"Blutility",                // Editor Utility Widgets/Blueprints
+				"Settings"                  // ISettingsModule for Editor Preferences
 			}
 		);
 		

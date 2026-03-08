@@ -25,6 +25,8 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "EdGraphSchema_K2.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
 
 // Declare the log category
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealMCP, Log, All);
@@ -129,6 +131,12 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleCommand(const FSt
     {
         return HandleDeleteBlueprintNode(Params);
     }
+    // Function management
+    else if (CommandType == TEXT("create_blueprint_function")) { return HandleCreateBlueprintFunction(Params); }
+    else if (CommandType == TEXT("delete_blueprint_function")) { return HandleDeleteBlueprintFunction(Params); }
+    else if (CommandType == TEXT("rename_blueprint_function")) { return HandleRenameBlueprintFunction(Params); }
+    else if (CommandType == TEXT("add_blueprint_function_input")) { return HandleAddBlueprintFunctionInput(Params); }
+    else if (CommandType == TEXT("add_blueprint_function_output")) { return HandleAddBlueprintFunctionOutput(Params); }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint node command: %s"), *CommandType));
 }
@@ -1869,5 +1877,575 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleDeleteBlueprintNo
 	ResultObj->SetStringField(TEXT("deleted_node_id"), NodeId);
 	ResultObj->SetStringField(TEXT("node_title"), NodeTitle);
 	ResultObj->SetStringField(TEXT("node_class"), NodeClass);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ============================================================================
+// Helper: Convert a type name string to FEdGraphPinType
+// ============================================================================
+static bool StringToPinType(const FString& TypeName, FEdGraphPinType& OutPinType)
+{
+	if (TypeName == TEXT("Boolean") || TypeName == TEXT("Bool"))
+	{
+		OutPinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+	}
+	else if (TypeName == TEXT("Integer") || TypeName == TEXT("Int"))
+	{
+		OutPinType.PinCategory = UEdGraphSchema_K2::PC_Int;
+	}
+	else if (TypeName == TEXT("Float") || TypeName == TEXT("Double") || TypeName == TEXT("Real"))
+	{
+		// UE 5.6: Use PC_Real with subcategory "double"
+		OutPinType.PinCategory = UEdGraphSchema_K2::PC_Real;
+		OutPinType.PinSubCategory = TEXT("double");
+	}
+	else if (TypeName == TEXT("String"))
+	{
+		OutPinType.PinCategory = UEdGraphSchema_K2::PC_String;
+	}
+	else if (TypeName == TEXT("Name"))
+	{
+		OutPinType.PinCategory = UEdGraphSchema_K2::PC_Name;
+	}
+	else if (TypeName == TEXT("Text"))
+	{
+		OutPinType.PinCategory = UEdGraphSchema_K2::PC_Text;
+	}
+	else if (TypeName == TEXT("Vector"))
+	{
+		OutPinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
+		OutPinType.PinSubCategoryObject = TBaseStructure<FVector>::Get();
+	}
+	else if (TypeName == TEXT("Rotator"))
+	{
+		OutPinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
+		OutPinType.PinSubCategoryObject = TBaseStructure<FRotator>::Get();
+	}
+	else if (TypeName == TEXT("Transform"))
+	{
+		OutPinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
+		OutPinType.PinSubCategoryObject = TBaseStructure<FTransform>::Get();
+	}
+	else if (TypeName == TEXT("Object"))
+	{
+		OutPinType.PinCategory = UEdGraphSchema_K2::PC_Object;
+	}
+	else if (TypeName == TEXT("Byte"))
+	{
+		OutPinType.PinCategory = UEdGraphSchema_K2::PC_Byte;
+	}
+	else if (TypeName == TEXT("Exec"))
+	{
+		OutPinType.PinCategory = UEdGraphSchema_K2::PC_Exec;
+	}
+	else
+	{
+		return false;
+	}
+	return true;
+}
+
+// ============================================================================
+// HandleCreateBlueprintFunction
+// ============================================================================
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleCreateBlueprintFunction(const TSharedPtr<FJsonObject>& Params)
+{
+	// Required params
+	FString BlueprintName;
+	if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+	}
+
+	FString FunctionName;
+	if (!Params->TryGetStringField(TEXT("function_name"), FunctionName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'function_name' parameter"));
+	}
+
+	// Optional params
+	FString AccessLevel = TEXT("Public");
+	Params->TryGetStringField(TEXT("access_level"), AccessLevel);
+
+	bool bIsPure = false;
+	if (Params->HasField(TEXT("is_pure")))
+	{
+		bIsPure = Params->GetBoolField(TEXT("is_pure"));
+	}
+
+	FString Category;
+	Params->TryGetStringField(TEXT("category"), Category);
+
+	FString Description;
+	Params->TryGetStringField(TEXT("description"), Description);
+
+	// Find blueprint
+	UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+	if (!Blueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+	}
+
+	// Check function doesn't already exist
+	for (UEdGraph* ExistingGraph : Blueprint->FunctionGraphs)
+	{
+		if (ExistingGraph && ExistingGraph->GetFName() == FName(*FunctionName))
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Function '%s' already exists in blueprint '%s'"), *FunctionName, *BlueprintName));
+		}
+	}
+
+	// Create the function graph
+	UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
+		Blueprint,
+		FName(*FunctionName),
+		UEdGraph::StaticClass(),
+		UEdGraphSchema_K2::StaticClass()
+	);
+
+	if (!NewGraph)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create function graph"));
+	}
+
+	// Add as function graph
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, NewGraph, /*bIsUserCreated=*/true, nullptr);
+
+	// Find the entry node to configure metadata
+	UK2Node_FunctionEntry* EntryNode = nullptr;
+	for (UEdGraphNode* Node : NewGraph->Nodes)
+	{
+		EntryNode = Cast<UK2Node_FunctionEntry>(Node);
+		if (EntryNode)
+		{
+			break;
+		}
+	}
+
+	if (EntryNode)
+	{
+		// Set access level via function flags
+		int32 ExtraFlags = EntryNode->GetExtraFlags();
+		// Clear existing access flags
+		ExtraFlags &= ~(FUNC_Public | FUNC_Protected | FUNC_Private);
+
+		if (AccessLevel == TEXT("Protected"))
+		{
+			ExtraFlags |= FUNC_Protected;
+		}
+		else if (AccessLevel == TEXT("Private"))
+		{
+			ExtraFlags |= FUNC_Private;
+		}
+		else
+		{
+			// Default: Public
+			ExtraFlags |= FUNC_Public;
+		}
+
+		// Set pure flag
+		if (bIsPure)
+		{
+			ExtraFlags |= FUNC_BlueprintPure;
+		}
+
+		EntryNode->SetExtraFlags(ExtraFlags);
+
+		// Set category
+		if (!Category.IsEmpty())
+		{
+			EntryNode->MetaData.Category = FText::FromString(Category);
+		}
+
+		// Set description
+		if (!Description.IsEmpty())
+		{
+			EntryNode->MetaData.ToolTip = FText::FromString(Description);
+		}
+	}
+
+	// Mark modified
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	// Build response
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("function_name"), FunctionName);
+	ResultObj->SetStringField(TEXT("graph_name"), NewGraph->GetName());
+	ResultObj->SetStringField(TEXT("access_level"), AccessLevel);
+	ResultObj->SetBoolField(TEXT("is_pure"), bIsPure);
+	if (!Category.IsEmpty())
+	{
+		ResultObj->SetStringField(TEXT("category"), Category);
+	}
+	if (EntryNode)
+	{
+		ResultObj->SetStringField(TEXT("entry_node_id"), EntryNode->NodeGuid.ToString());
+	}
+
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ============================================================================
+// HandleDeleteBlueprintFunction
+// ============================================================================
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleDeleteBlueprintFunction(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintName;
+	if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+	}
+
+	FString FunctionName;
+	if (!Params->TryGetStringField(TEXT("function_name"), FunctionName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'function_name' parameter"));
+	}
+
+	// Block deletion of critical graphs
+	if (FunctionName == TEXT("ConstructionScript") || FunctionName == TEXT("EventGraph") || FunctionName == TEXT("UserConstructionScript"))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Cannot delete protected graph '%s'"), *FunctionName));
+	}
+
+	UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+	if (!Blueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+	}
+
+	// Find the function graph
+	UEdGraph* TargetGraph = nullptr;
+	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	{
+		if (Graph && Graph->GetFName() == FName(*FunctionName))
+		{
+			TargetGraph = Graph;
+			break;
+		}
+	}
+
+	if (!TargetGraph)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Function '%s' not found in blueprint '%s'"), *FunctionName, *BlueprintName));
+	}
+
+	// Remove the graph
+	FBlueprintEditorUtils::RemoveGraph(Blueprint, TargetGraph);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("deleted_function"), FunctionName);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ============================================================================
+// HandleRenameBlueprintFunction
+// ============================================================================
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleRenameBlueprintFunction(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintName;
+	if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+	}
+
+	FString FunctionName;
+	if (!Params->TryGetStringField(TEXT("function_name"), FunctionName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'function_name' parameter"));
+	}
+
+	FString NewName;
+	if (!Params->TryGetStringField(TEXT("new_name"), NewName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'new_name' parameter"));
+	}
+
+	UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+	if (!Blueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+	}
+
+	// Find the function graph
+	UEdGraph* TargetGraph = nullptr;
+	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	{
+		if (Graph && Graph->GetFName() == FName(*FunctionName))
+		{
+			TargetGraph = Graph;
+			break;
+		}
+	}
+
+	if (!TargetGraph)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Function '%s' not found in blueprint '%s'"), *FunctionName, *BlueprintName));
+	}
+
+	// Check new name doesn't already exist
+	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	{
+		if (Graph && Graph->GetFName() == FName(*NewName))
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("A function named '%s' already exists in blueprint '%s'"), *NewName, *BlueprintName));
+		}
+	}
+
+	// Rename the graph
+	FBlueprintEditorUtils::RenameGraph(TargetGraph, NewName);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("old_name"), FunctionName);
+	ResultObj->SetStringField(TEXT("new_name"), NewName);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ============================================================================
+// HandleAddBlueprintFunctionInput
+// ============================================================================
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintFunctionInput(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintName;
+	if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+	}
+
+	FString FunctionName;
+	if (!Params->TryGetStringField(TEXT("function_name"), FunctionName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'function_name' parameter"));
+	}
+
+	FString ParamName;
+	if (!Params->TryGetStringField(TEXT("param_name"), ParamName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'param_name' parameter"));
+	}
+
+	FString ParamType;
+	if (!Params->TryGetStringField(TEXT("param_type"), ParamType))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'param_type' parameter"));
+	}
+
+	FString DefaultValue;
+	Params->TryGetStringField(TEXT("default_value"), DefaultValue);
+
+	UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+	if (!Blueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+	}
+
+	// Find the function graph
+	UEdGraph* FunctionGraph = nullptr;
+	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	{
+		if (Graph && Graph->GetFName() == FName(*FunctionName))
+		{
+			FunctionGraph = Graph;
+			break;
+		}
+	}
+
+	if (!FunctionGraph)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Function '%s' not found in blueprint '%s'"), *FunctionName, *BlueprintName));
+	}
+
+	// Find the function entry node
+	UK2Node_FunctionEntry* EntryNode = nullptr;
+	for (UEdGraphNode* Node : FunctionGraph->Nodes)
+	{
+		EntryNode = Cast<UK2Node_FunctionEntry>(Node);
+		if (EntryNode)
+		{
+			break;
+		}
+	}
+
+	if (!EntryNode)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to find function entry node"));
+	}
+
+	// Convert type string to pin type
+	FEdGraphPinType PinType;
+	if (!StringToPinType(ParamType, PinType))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Unsupported param_type: '%s'. Supported types: Boolean, Integer, Float, String, Name, Text, Vector, Rotator, Transform, Object, Byte"),
+			*ParamType));
+	}
+
+	// Function entry output pins = function inputs
+	UEdGraphPin* NewPin = EntryNode->CreateUserDefinedPin(FName(*ParamName), PinType, EGPD_Output);
+	if (!NewPin)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to create input parameter '%s'"), *ParamName));
+	}
+
+	// Set default value if provided
+	if (!DefaultValue.IsEmpty())
+	{
+		NewPin->DefaultValue = DefaultValue;
+	}
+
+	// Reconstruct the node to update visuals
+	EntryNode->ReconstructNode();
+	FunctionGraph->NotifyGraphChanged();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("function_name"), FunctionName);
+	ResultObj->SetStringField(TEXT("param_name"), ParamName);
+	ResultObj->SetStringField(TEXT("param_type"), ParamType);
+	ResultObj->SetStringField(TEXT("pin_direction"), TEXT("output"));
+	if (!DefaultValue.IsEmpty())
+	{
+		ResultObj->SetStringField(TEXT("default_value"), DefaultValue);
+	}
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+// ============================================================================
+// HandleAddBlueprintFunctionOutput
+// ============================================================================
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintFunctionOutput(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintName;
+	if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+	}
+
+	FString FunctionName;
+	if (!Params->TryGetStringField(TEXT("function_name"), FunctionName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'function_name' parameter"));
+	}
+
+	FString ParamName;
+	if (!Params->TryGetStringField(TEXT("param_name"), ParamName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'param_name' parameter"));
+	}
+
+	FString ParamType;
+	if (!Params->TryGetStringField(TEXT("param_type"), ParamType))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'param_type' parameter"));
+	}
+
+	FString DefaultValue;
+	Params->TryGetStringField(TEXT("default_value"), DefaultValue);
+
+	UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+	if (!Blueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+	}
+
+	// Find the function graph
+	UEdGraph* FunctionGraph = nullptr;
+	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	{
+		if (Graph && Graph->GetFName() == FName(*FunctionName))
+		{
+			FunctionGraph = Graph;
+			break;
+		}
+	}
+
+	if (!FunctionGraph)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Function '%s' not found in blueprint '%s'"), *FunctionName, *BlueprintName));
+	}
+
+	// Find the function entry node (needed for creating result node)
+	UK2Node_FunctionEntry* EntryNode = nullptr;
+	for (UEdGraphNode* Node : FunctionGraph->Nodes)
+	{
+		EntryNode = Cast<UK2Node_FunctionEntry>(Node);
+		if (EntryNode)
+		{
+			break;
+		}
+	}
+
+	if (!EntryNode)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to find function entry node"));
+	}
+
+	// Find existing result node, or create one
+	UK2Node_FunctionResult* ResultNode = nullptr;
+	for (UEdGraphNode* Node : FunctionGraph->Nodes)
+	{
+		ResultNode = Cast<UK2Node_FunctionResult>(Node);
+		if (ResultNode)
+		{
+			break;
+		}
+	}
+
+	if (!ResultNode)
+	{
+		// Create a result node — position it to the right of the entry node
+		ResultNode = NewObject<UK2Node_FunctionResult>(FunctionGraph);
+		if (!ResultNode)
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create function result node"));
+		}
+
+		ResultNode->NodePosX = EntryNode->NodePosX + 400;
+		ResultNode->NodePosY = EntryNode->NodePosY;
+		FunctionGraph->AddNode(ResultNode);
+		ResultNode->CreateNewGuid();
+		ResultNode->PostPlacedNewNode();
+		ResultNode->AllocateDefaultPins();
+	}
+
+	// Convert type string to pin type
+	FEdGraphPinType PinType;
+	if (!StringToPinType(ParamType, PinType))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Unsupported param_type: '%s'. Supported types: Boolean, Integer, Float, String, Name, Text, Vector, Rotator, Transform, Object, Byte"),
+			*ParamType));
+	}
+
+	// Function result input pins = function outputs
+	UEdGraphPin* NewPin = ResultNode->CreateUserDefinedPin(FName(*ParamName), PinType, EGPD_Input);
+	if (!NewPin)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to create output parameter '%s'"), *ParamName));
+	}
+
+	// Set default value if provided
+	if (!DefaultValue.IsEmpty())
+	{
+		NewPin->DefaultValue = DefaultValue;
+	}
+
+	// Reconstruct the node to update visuals
+	ResultNode->ReconstructNode();
+	FunctionGraph->NotifyGraphChanged();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("function_name"), FunctionName);
+	ResultObj->SetStringField(TEXT("param_name"), ParamName);
+	ResultObj->SetStringField(TEXT("param_type"), ParamType);
+	ResultObj->SetStringField(TEXT("pin_direction"), TEXT("input"));
+	ResultObj->SetStringField(TEXT("result_node_id"), ResultNode->NodeGuid.ToString());
+	if (!DefaultValue.IsEmpty())
+	{
+		ResultObj->SetStringField(TEXT("default_value"), DefaultValue);
+	}
 	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
 }

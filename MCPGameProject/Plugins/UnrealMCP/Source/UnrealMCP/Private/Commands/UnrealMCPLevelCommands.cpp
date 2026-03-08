@@ -7,6 +7,10 @@
 #include "Kismet/GameplayStatics.h"
 #include "Engine/Engine.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Guid.h"
+#include "HAL/PlatformFileManager.h"
+#include "UObject/GarbageCollection.h"
 
 FUnrealMCPLevelCommands::FUnrealMCPLevelCommands()
 {
@@ -58,6 +62,10 @@ TSharedPtr<FJsonObject> FUnrealMCPLevelCommands::HandleCommand(const FString& Co
 	{
 		return HandleSetWorldSettings(Params);
 	}
+	else if (CommandType == TEXT("execute_python"))
+	{
+		return HandleExecutePython(Params);
+	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown level command: %s"), *CommandType));
 }
@@ -69,6 +77,15 @@ TSharedPtr<FJsonObject> FUnrealMCPLevelCommands::HandleNewLevel(const TSharedPtr
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get LevelEditorSubsystem"));
 	}
+
+	// Block new level creation during PIE to prevent world memory leak crash
+	if (LevelEditorSubsystem->IsInPlayInEditor())
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Cannot create a new level while Play-In-Editor is active. "
+			     "Call stop_play_in_editor first, then retry new_level."));
+	}
+	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 
 	FString AssetPath;
 	Params->TryGetStringField(TEXT("asset_path"), AssetPath);
@@ -109,6 +126,21 @@ TSharedPtr<FJsonObject> FUnrealMCPLevelCommands::HandleLoadLevel(const TSharedPt
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get LevelEditorSubsystem"));
 	}
+
+	// CRITICAL: Loading a level while PIE is active causes a fatal
+	// "World Memory Leaks" crash in CheckForWorldGCLeaks(). We cannot end
+	// PIE ourselves because we're inside an AsyncTask and EndPlayMap()
+	// causes task graph re-entrancy. Callers must stop PIE first.
+	if (LevelEditorSubsystem->IsInPlayInEditor())
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Cannot load a level while Play-In-Editor is active. "
+			     "Call stop_play_in_editor first, then retry load_level."));
+	}
+
+	// Force garbage collection to clean up any lingering PIE world objects
+	// from a recently-ended PIE session
+	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 
 	// Record the old world name so we can verify the level actually changed
 	FString OldLevelName;
@@ -472,4 +504,136 @@ TSharedPtr<FJsonObject> FUnrealMCPLevelCommands::HandleSetWorldSettings(const TS
 	WorldSettings->Modify();
 
 	return FUnrealMCPCommonUtils::CreateSuccessResponse();
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPLevelCommands::HandleExecutePython(const TSharedPtr<FJsonObject>& Params)
+{
+	FString Code;
+	FString File;
+	bool bHasCode = Params->TryGetStringField(TEXT("code"), Code);
+	bool bHasFile = Params->TryGetStringField(TEXT("file"), File);
+
+	if (!bHasCode && !bHasFile)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Must provide either 'code' or 'file' parameter"));
+	}
+	if (bHasCode && bHasFile)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Provide either 'code' or 'file', not both"));
+	}
+
+	// Create temp directory
+	FString TempDir = FPaths::ProjectSavedDir() / TEXT("MCPPythonTemp");
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	if (!PlatformFile.DirectoryExists(*TempDir))
+	{
+		PlatformFile.CreateDirectoryTree(*TempDir);
+	}
+
+	FString UniqueId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+
+	// If code was provided, write it to a temp file
+	FString UserScriptPath;
+	if (bHasCode)
+	{
+		UserScriptPath = TempDir / FString::Printf(TEXT("mcp_user_code_%s.py"), *UniqueId);
+		if (!FFileHelper::SaveStringToFile(Code, *UserScriptPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to write temp Python code file"));
+		}
+	}
+	else
+	{
+		UserScriptPath = File;
+	}
+
+	// Build paths for output files (use forward slashes for Python compatibility)
+	FString OutputFilePath = TempDir / FString::Printf(TEXT("output_%s.txt"), *UniqueId);
+	FString ErrorFilePath = TempDir / FString::Printf(TEXT("error_%s.txt"), *UniqueId);
+	FString StatusFilePath = TempDir / FString::Printf(TEXT("status_%s.txt"), *UniqueId);
+	FString WrapperPath = TempDir / FString::Printf(TEXT("mcp_wrapper_%s.py"), *UniqueId);
+
+	// Convert all paths to forward slashes for Python
+	FString PyUserScript = UserScriptPath.Replace(TEXT("\\"), TEXT("/"));
+	FString PyOutputFile = OutputFilePath.Replace(TEXT("\\"), TEXT("/"));
+	FString PyErrorFile = ErrorFilePath.Replace(TEXT("\\"), TEXT("/"));
+	FString PyStatusFile = StatusFilePath.Replace(TEXT("\\"), TEXT("/"));
+
+	// Build the wrapper Python script
+	FString WrapperCode = FString::Printf(TEXT(
+		"import sys\n"
+		"import io\n"
+		"import traceback\n"
+		"\n"
+		"_mcp_stdout = io.StringIO()\n"
+		"_mcp_stderr = io.StringIO()\n"
+		"_mcp_old_stdout = sys.stdout\n"
+		"_mcp_old_stderr = sys.stderr\n"
+		"sys.stdout = _mcp_stdout\n"
+		"sys.stderr = _mcp_stderr\n"
+		"_mcp_status = 'success'\n"
+		"\n"
+		"try:\n"
+		"    with open('%s', 'r', encoding='utf-8') as _mcp_f:\n"
+		"        _mcp_code = _mcp_f.read()\n"
+		"    exec(compile(_mcp_code, '%s', 'exec'))\n"
+		"except Exception as _mcp_e:\n"
+		"    _mcp_status = 'error'\n"
+		"    traceback.print_exc(file=_mcp_stderr)\n"
+		"finally:\n"
+		"    sys.stdout = _mcp_old_stdout\n"
+		"    sys.stderr = _mcp_old_stderr\n"
+		"    with open('%s', 'w', encoding='utf-8') as _mcp_of:\n"
+		"        _mcp_of.write(_mcp_stdout.getvalue())\n"
+		"    with open('%s', 'w', encoding='utf-8') as _mcp_ef:\n"
+		"        _mcp_ef.write(_mcp_stderr.getvalue())\n"
+		"    with open('%s', 'w', encoding='utf-8') as _mcp_sf:\n"
+		"        _mcp_sf.write(_mcp_status)\n"
+	), *PyUserScript, *PyUserScript, *PyOutputFile, *PyErrorFile, *PyStatusFile);
+
+	if (!FFileHelper::SaveStringToFile(WrapperCode, *WrapperPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+	{
+		// Clean up user code file if we created it
+		if (bHasCode)
+		{
+			PlatformFile.DeleteFile(*UserScriptPath);
+		}
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to write Python wrapper script"));
+	}
+
+	// Execute wrapper via UE's embedded Python interpreter
+	FString PyCommand = FString::Printf(TEXT("py \"%s\""), *WrapperPath);
+	GEngine->Exec(nullptr, *PyCommand);
+
+	// Read results back
+	FString Output;
+	FString Error;
+	FString Status;
+	FFileHelper::LoadFileToString(Output, *OutputFilePath);
+	FFileHelper::LoadFileToString(Error, *ErrorFilePath);
+	FFileHelper::LoadFileToString(Status, *StatusFilePath);
+
+	// Clean up all temp files
+	PlatformFile.DeleteFile(*WrapperPath);
+	PlatformFile.DeleteFile(*OutputFilePath);
+	PlatformFile.DeleteFile(*ErrorFilePath);
+	PlatformFile.DeleteFile(*StatusFilePath);
+	if (bHasCode)
+	{
+		PlatformFile.DeleteFile(*UserScriptPath);
+	}
+
+	// If status file was never written, the py command itself may have failed
+	if (Status.IsEmpty())
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Python execution failed - the 'py' console command did not produce output. "
+			     "Ensure the Python Editor Script Plugin is enabled in your project."));
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("output"), Output);
+	ResultObj->SetStringField(TEXT("error"), Error);
+	ResultObj->SetBoolField(TEXT("executed"), Status == TEXT("success"));
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
 }

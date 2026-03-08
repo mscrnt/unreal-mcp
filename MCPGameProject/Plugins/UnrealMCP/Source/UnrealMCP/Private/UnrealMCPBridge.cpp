@@ -61,10 +61,7 @@
 #include "Commands/UnrealMCPMaterialCommands.h"
 #include "Commands/UnrealMCPAssetCommands.h"
 #include "Commands/UnrealMCPGameplayCommands.h"
-
-// Default settings
-#define MCP_SERVER_HOST "0.0.0.0"
-#define MCP_SERVER_PORT 55557
+#include "MCPSettings.h"
 
 UUnrealMCPBridge::UUnrealMCPBridge()
 {
@@ -102,11 +99,17 @@ void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
     ListenerSocket = nullptr;
     ConnectionSocket = nullptr;
     ServerThread = nullptr;
-    Port = MCP_SERVER_PORT;
-    FIPv4Address::Parse(MCP_SERVER_HOST, ServerAddress);
 
-    // Start the server automatically
-    StartServer();
+    // Read settings from UMCPSettings (Editor Preferences > Plugins > MCP Settings)
+    const UMCPSettings* Settings = GetDefault<UMCPSettings>();
+    Port = static_cast<uint16>(Settings->Port);
+    FIPv4Address::Parse(*Settings->BindAddress, ServerAddress);
+
+    // Only auto-start if the setting is enabled
+    if (Settings->bAutoStart)
+    {
+        StartServer();
+    }
 }
 
 // Clean up resources when subsystem is destroyed
@@ -274,16 +277,19 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }
             // Blueprint Commands
-            else if (CommandType == TEXT("create_blueprint") || 
-                     CommandType == TEXT("add_component_to_blueprint") || 
-                     CommandType == TEXT("set_component_property") || 
-                     CommandType == TEXT("set_physics_properties") || 
-                     CommandType == TEXT("compile_blueprint") || 
-                     CommandType == TEXT("set_blueprint_property") || 
+            else if (CommandType == TEXT("create_blueprint") ||
+                     CommandType == TEXT("add_component_to_blueprint") ||
+                     CommandType == TEXT("set_component_property") ||
+                     CommandType == TEXT("set_physics_properties") ||
+                     CommandType == TEXT("compile_blueprint") ||
+                     CommandType == TEXT("set_blueprint_property") ||
                      CommandType == TEXT("set_static_mesh_properties") ||
                      CommandType == TEXT("set_pawn_properties") ||
                      CommandType == TEXT("reparent_blueprint_component") ||
-                     CommandType == TEXT("remove_blueprint_component"))
+                     CommandType == TEXT("remove_blueprint_component") ||
+                     CommandType == TEXT("inspect_blueprint") ||
+                     CommandType == TEXT("analyze_blueprint_graph") ||
+                     CommandType == TEXT("set_blueprint_metadata"))
             {
                 ResultJson = BlueprintCommands->HandleCommand(CommandType, Params);
             }
@@ -309,7 +315,12 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("add_blueprint_math_node") ||
                      CommandType == TEXT("remove_blueprint_variable") ||
                      CommandType == TEXT("change_blueprint_variable_type") ||
-                     CommandType == TEXT("delete_blueprint_node"))
+                     CommandType == TEXT("delete_blueprint_node") ||
+                     CommandType == TEXT("create_blueprint_function") ||
+                     CommandType == TEXT("delete_blueprint_function") ||
+                     CommandType == TEXT("rename_blueprint_function") ||
+                     CommandType == TEXT("add_blueprint_function_input") ||
+                     CommandType == TEXT("add_blueprint_function_output"))
             {
                 ResultJson = BlueprintNodeCommands->HandleCommand(CommandType, Params);
             }
@@ -339,7 +350,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("is_playing") ||
                      CommandType == TEXT("execute_console_command") ||
                      CommandType == TEXT("build_lighting") ||
-                     CommandType == TEXT("set_world_settings"))
+                     CommandType == TEXT("set_world_settings") ||
+                     CommandType == TEXT("execute_python"))
             {
                 ResultJson = LevelCommands->HandleCommand(CommandType, Params);
             }
@@ -355,7 +367,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("apply_material_to_actor") ||
                      CommandType == TEXT("recompile_material") ||
                      CommandType == TEXT("set_material_expression_property") ||
-                     CommandType == TEXT("get_material_expressions"))
+                     CommandType == TEXT("get_material_expressions") ||
+                     CommandType == TEXT("get_material_info"))
             {
                 ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
             }
@@ -402,14 +415,29 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             }
             else
             {
+                // Check extension handlers before returning unknown command
+                bool bHandledByExtension = false;
+                for (const auto& Pair : ExtensionHandlers)
+                {
+                    if (CommandType.StartsWith(Pair.Key))
+                    {
+                        ResultJson = Pair.Value.Execute(CommandType, Params);
+                        bHandledByExtension = true;
+                        break;
+                    }
+                }
+
+                if (!bHandledByExtension)
+                {
                 ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
                 ResponseJson->SetStringField(TEXT("error"), FString::Printf(TEXT("Unknown command: %s"), *CommandType));
-                
+
                 FString ResultString;
                 TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
                 FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
                 Promise.SetValue(ResultString);
                 return;
+                }
             }
             
             // Check if the result contains an error
@@ -451,4 +479,16 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
     });
     
     return Future.Get();
+}
+
+void UUnrealMCPBridge::RegisterExtensionHandler(const FString& CommandPrefix, FMCPCommandHandler Handler)
+{
+	ExtensionHandlers.Add(CommandPrefix, Handler);
+	UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Registered extension handler for prefix '%s'"), *CommandPrefix);
+}
+
+void UUnrealMCPBridge::UnregisterExtensionHandler(const FString& CommandPrefix)
+{
+	ExtensionHandlers.Remove(CommandPrefix);
+	UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Unregistered extension handler for prefix '%s'"), *CommandPrefix);
 }

@@ -10,6 +10,7 @@
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
+#include "Materials/MaterialExpressionTextureSampleParameter.h"
 #include "Materials/MaterialExpressionMultiply.h"
 #include "Materials/MaterialExpressionAdd.h"
 #include "Materials/MaterialExpressionLinearInterpolate.h"
@@ -75,6 +76,10 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleCommand(const FString&
 	else if (CommandType == TEXT("get_material_expressions"))
 	{
 		return HandleGetMaterialExpressions(Params);
+	}
+	else if (CommandType == TEXT("get_material_info"))
+	{
+		return HandleGetMaterialInfo(Params);
 	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown material command: %s"), *CommandType));
@@ -873,5 +878,177 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleGetMaterialExpressions
 	ResultObj->SetStringField(TEXT("material"), MaterialPath);
 	ResultObj->SetNumberField(TEXT("expression_count"), Expressions.Num());
 	ResultObj->SetArrayField(TEXT("expressions"), ExpressionArray);
+	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleGetMaterialInfo(const TSharedPtr<FJsonObject>& Params)
+{
+	FString MaterialName;
+	if (!Params->TryGetStringField(TEXT("material_name"), MaterialName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_name' parameter"));
+	}
+
+	// Try loading as-is first
+	UMaterialInterface* MaterialInterface = LoadObject<UMaterialInterface>(nullptr, *MaterialName);
+
+	// Try with /Game/ prefix
+	if (!MaterialInterface && !MaterialName.StartsWith(TEXT("/Game/")))
+	{
+		FString WithPrefix = TEXT("/Game/") + MaterialName;
+		MaterialInterface = LoadObject<UMaterialInterface>(nullptr, *WithPrefix);
+	}
+
+	// Try with asset suffix (e.g. "/Game/Materials/M_Red.M_Red")
+	if (!MaterialInterface)
+	{
+		FString AssetPath = MaterialName + TEXT(".") + FPaths::GetBaseFilename(MaterialName);
+		MaterialInterface = LoadObject<UMaterialInterface>(nullptr, *AssetPath);
+	}
+
+	if (!MaterialInterface)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Material not found: %s"), *MaterialName));
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("name"), MaterialInterface->GetName());
+	ResultObj->SetStringField(TEXT("path"), MaterialInterface->GetPathName());
+
+	// Check if it's a UMaterial (base material)
+	if (UMaterial* Material = Cast<UMaterial>(MaterialInterface))
+	{
+		ResultObj->SetStringField(TEXT("material_type"), TEXT("Material"));
+
+		// Blend mode
+		FString BlendModeStr;
+		switch (Material->BlendMode)
+		{
+		case BLEND_Opaque:      BlendModeStr = TEXT("Opaque"); break;
+		case BLEND_Masked:      BlendModeStr = TEXT("Masked"); break;
+		case BLEND_Translucent: BlendModeStr = TEXT("Translucent"); break;
+		case BLEND_Additive:    BlendModeStr = TEXT("Additive"); break;
+		default:                BlendModeStr = TEXT("Unknown"); break;
+		}
+		ResultObj->SetStringField(TEXT("blend_mode"), BlendModeStr);
+
+		// Shading model
+		FString ShadingModelStr = TEXT("Unknown");
+		FMaterialShadingModelField ShadingModels = Material->GetShadingModels();
+		if (ShadingModels.HasShadingModel(MSM_DefaultLit))        ShadingModelStr = TEXT("DefaultLit");
+		else if (ShadingModels.HasShadingModel(MSM_Unlit))        ShadingModelStr = TEXT("Unlit");
+		else if (ShadingModels.HasShadingModel(MSM_Subsurface))   ShadingModelStr = TEXT("Subsurface");
+		else if (ShadingModels.HasShadingModel(MSM_ClearCoat))    ShadingModelStr = TEXT("ClearCoat");
+		else if (ShadingModels.HasShadingModel(MSM_SubsurfaceProfile)) ShadingModelStr = TEXT("SubsurfaceProfile");
+		else if (ShadingModels.HasShadingModel(MSM_TwoSidedFoliage))   ShadingModelStr = TEXT("TwoSidedFoliage");
+		else if (ShadingModels.HasShadingModel(MSM_Hair))         ShadingModelStr = TEXT("Hair");
+		else if (ShadingModels.HasShadingModel(MSM_Cloth))        ShadingModelStr = TEXT("Cloth");
+		else if (ShadingModels.HasShadingModel(MSM_Eye))          ShadingModelStr = TEXT("Eye");
+		else if (ShadingModels.HasShadingModel(MSM_ThinTranslucent)) ShadingModelStr = TEXT("ThinTranslucent");
+		ResultObj->SetStringField(TEXT("shading_model"), ShadingModelStr);
+
+		// Two-sided
+		ResultObj->SetBoolField(TEXT("two_sided"), Material->IsTwoSided());
+
+		// Expression count
+		auto Expressions = Material->GetExpressions();
+		ResultObj->SetNumberField(TEXT("expression_count"), Expressions.Num());
+
+		// Extract parameters from expressions
+		TArray<TSharedPtr<FJsonValue>> ScalarParams;
+		TArray<TSharedPtr<FJsonValue>> VectorParams;
+		TArray<TSharedPtr<FJsonValue>> TextureParams;
+
+		for (UMaterialExpression* Expr : Expressions)
+		{
+			if (UMaterialExpressionScalarParameter* ScalarParam = Cast<UMaterialExpressionScalarParameter>(Expr))
+			{
+				TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+				ParamObj->SetStringField(TEXT("name"), ScalarParam->ParameterName.ToString());
+				ParamObj->SetNumberField(TEXT("default_value"), ScalarParam->DefaultValue);
+				ScalarParams.Add(MakeShared<FJsonValueObject>(ParamObj));
+			}
+			else if (UMaterialExpressionVectorParameter* VectorParam = Cast<UMaterialExpressionVectorParameter>(Expr))
+			{
+				TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+				ParamObj->SetStringField(TEXT("name"), VectorParam->ParameterName.ToString());
+				TSharedPtr<FJsonObject> ColorObj = MakeShared<FJsonObject>();
+				ColorObj->SetNumberField(TEXT("r"), VectorParam->DefaultValue.R);
+				ColorObj->SetNumberField(TEXT("g"), VectorParam->DefaultValue.G);
+				ColorObj->SetNumberField(TEXT("b"), VectorParam->DefaultValue.B);
+				ColorObj->SetNumberField(TEXT("a"), VectorParam->DefaultValue.A);
+				ParamObj->SetObjectField(TEXT("default_value"), ColorObj);
+				VectorParams.Add(MakeShared<FJsonValueObject>(ParamObj));
+			}
+			else if (UMaterialExpressionTextureSampleParameter* TextureParam = Cast<UMaterialExpressionTextureSampleParameter>(Expr))
+			{
+				TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+				ParamObj->SetStringField(TEXT("name"), TextureParam->ParameterName.ToString());
+				ParamObj->SetStringField(TEXT("texture"), TextureParam->Texture ? TextureParam->Texture->GetPathName() : TEXT("None"));
+				TextureParams.Add(MakeShared<FJsonValueObject>(ParamObj));
+			}
+		}
+
+		TSharedPtr<FJsonObject> ParamsObj = MakeShared<FJsonObject>();
+		ParamsObj->SetArrayField(TEXT("scalar"), ScalarParams);
+		ParamsObj->SetArrayField(TEXT("vector"), VectorParams);
+		ParamsObj->SetArrayField(TEXT("texture"), TextureParams);
+		ResultObj->SetObjectField(TEXT("parameters"), ParamsObj);
+	}
+	// Check if it's a UMaterialInstanceConstant
+	else if (UMaterialInstanceConstant* MIC = Cast<UMaterialInstanceConstant>(MaterialInterface))
+	{
+		ResultObj->SetStringField(TEXT("material_type"), TEXT("MaterialInstance"));
+
+		// Parent material
+		UMaterialInterface* Parent = MIC->Parent;
+		ResultObj->SetStringField(TEXT("parent"), Parent ? Parent->GetPathName() : TEXT("None"));
+
+		// Overridden scalar parameters
+		TArray<TSharedPtr<FJsonValue>> ScalarParams;
+		for (const FScalarParameterValue& ScalarVal : MIC->ScalarParameterValues)
+		{
+			TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+			ParamObj->SetStringField(TEXT("name"), ScalarVal.ParameterInfo.Name.ToString());
+			ParamObj->SetNumberField(TEXT("value"), ScalarVal.ParameterValue);
+			ScalarParams.Add(MakeShared<FJsonValueObject>(ParamObj));
+		}
+
+		// Overridden vector parameters
+		TArray<TSharedPtr<FJsonValue>> VectorParams;
+		for (const FVectorParameterValue& VectorVal : MIC->VectorParameterValues)
+		{
+			TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+			ParamObj->SetStringField(TEXT("name"), VectorVal.ParameterInfo.Name.ToString());
+			TSharedPtr<FJsonObject> ColorObj = MakeShared<FJsonObject>();
+			ColorObj->SetNumberField(TEXT("r"), VectorVal.ParameterValue.R);
+			ColorObj->SetNumberField(TEXT("g"), VectorVal.ParameterValue.G);
+			ColorObj->SetNumberField(TEXT("b"), VectorVal.ParameterValue.B);
+			ColorObj->SetNumberField(TEXT("a"), VectorVal.ParameterValue.A);
+			ParamObj->SetObjectField(TEXT("value"), ColorObj);
+			VectorParams.Add(MakeShared<FJsonValueObject>(ParamObj));
+		}
+
+		// Overridden texture parameters
+		TArray<TSharedPtr<FJsonValue>> TextureParams;
+		for (const FTextureParameterValue& TextureVal : MIC->TextureParameterValues)
+		{
+			TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+			ParamObj->SetStringField(TEXT("name"), TextureVal.ParameterInfo.Name.ToString());
+			ParamObj->SetStringField(TEXT("value"), TextureVal.ParameterValue ? TextureVal.ParameterValue->GetPathName() : TEXT("None"));
+			TextureParams.Add(MakeShared<FJsonValueObject>(ParamObj));
+		}
+
+		TSharedPtr<FJsonObject> OverridesObj = MakeShared<FJsonObject>();
+		OverridesObj->SetArrayField(TEXT("scalar"), ScalarParams);
+		OverridesObj->SetArrayField(TEXT("vector"), VectorParams);
+		OverridesObj->SetArrayField(TEXT("texture"), TextureParams);
+		ResultObj->SetObjectField(TEXT("overridden_parameters"), OverridesObj);
+	}
+	else
+	{
+		ResultObj->SetStringField(TEXT("material_type"), TEXT("Other"));
+	}
+
 	return FUnrealMCPCommonUtils::CreateSuccessResponse(ResultObj);
 }

@@ -7,16 +7,18 @@ window usage by only exposing tools relevant to the current task.
 Scopes and their approximate tool counts (after merges):
   editor          ~22 tools  - Actor CRUD, viewport, screenshots, editor utilities
   assets          ~10 tools  - List/find/manage content browser assets
-  level           ~ 8 tools  - Levels, PIE, console, lighting, world settings
+  level           ~ 9 tools  - Levels, PIE, console, lighting, world settings, execute_python
   process         ~ 5 tools  - Start/stop editor, cache management
-  blueprint       ~ 9 tools  - Create BPs, add/configure components, compile
-  blueprint_nodes ~16 tools  - Node graph authoring (events, functions, flow, math)
-  materials       ~10 tools  - Material creation, expressions, params
+  blueprint       ~12 tools  - Create BPs, components, compile, introspection, metadata
+  blueprint_nodes ~18 tools  - Node graph authoring, function management
+  materials       ~11 tools  - Material creation, expressions, params, get_material_info
   animation       ~ 7 tools  - AnimBP, state machines, transitions
   umg             ~ 6 tools  - Widget blueprints, buttons, text blocks
   project         ~ 7 tools  - Game mode, input, project settings
+  worldbuilding   ~ 3 tools  - Procedural structures, buildings, infrastructure
+  user            ~ ? tools  - Auto-discovered from UserTools/*.py
 
-Default config (tool_scopes.json) activates: editor, assets, level, process (~45 tools).
+Default config (tool_scopes.json) activates: editor, assets, level, process (~46 tools).
 Agents can activate additional scopes at runtime with activate_tool_scope().
 """
 

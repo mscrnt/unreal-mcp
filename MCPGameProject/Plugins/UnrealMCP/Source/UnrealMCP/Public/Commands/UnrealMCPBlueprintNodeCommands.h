@@ -43,4 +43,11 @@ private:
 
     // Node management
     TSharedPtr<FJsonObject> HandleDeleteBlueprintNode(const TSharedPtr<FJsonObject>& Params);
-}; 
+
+    // Function management
+    TSharedPtr<FJsonObject> HandleCreateBlueprintFunction(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleDeleteBlueprintFunction(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleRenameBlueprintFunction(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddBlueprintFunctionInput(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddBlueprintFunctionOutput(const TSharedPtr<FJsonObject>& Params);
+};
